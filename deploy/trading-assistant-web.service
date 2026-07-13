@@ -1,0 +1,23 @@
+[Unit]
+Description=OpenStock decision desk web
+After=network-online.target trading-assistant-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trading-assistant
+Group=trading-assistant
+WorkingDirectory=/opt/trading-assistant/web
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3100
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

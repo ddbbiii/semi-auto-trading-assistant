@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "semi-auto-trading-assistant"
+version = "0.1.0"
+description = "Supervised Futu/Moomoo OpenAPI trading assistant starter."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "AGPL-3.0-only" }
+authors = [{ name = "Private" }]
+dependencies = [
+  "alembic>=1.16,<2",
+  "apscheduler>=3.11,<4",
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "openpyxl>=3.1,<4",
+  "pillow>=11,<13",
+  "pydantic>=2.11,<3",
+  "python-multipart>=0.0.20,<1",
+  "pytesseract>=0.3.13,<1",
+  "sqlalchemy>=2.0,<3",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.optional-dependencies]
+brokers = [
+  "futu-api",
+  "moomoo-api",
+]
+dev = [
+  "pytest>=8",
+  "pytest-cov>=6",
+]
+
+[project.scripts]
+trading-assistant = "trading_assistant.cli:main"
+trading-assistant-api = "trading_assistant.api:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

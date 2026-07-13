@@ -1,0 +1,23 @@
+[Unit]
+Description=OpenStock decision API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trading-assistant
+Group=trading-assistant
+WorkingDirectory=/opt/trading-assistant/app
+EnvironmentFile=/etc/trading-assistant/trading-assistant.env
+ExecStartPre=/opt/trading-assistant/venv/bin/python -m alembic upgrade head
+ExecStart=/opt/trading-assistant/venv/bin/uvicorn trading_assistant.api:app --host 127.0.0.1 --port 8765 --workers 1
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/trading-assistant
+
+[Install]
+WantedBy=multi-user.target

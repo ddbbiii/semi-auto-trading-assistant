@@ -1,0 +1,13 @@
+[Unit]
+Description=Back up OpenStock decision desk data
+
+[Service]
+Type=oneshot
+User=trading-assistant
+Group=trading-assistant
+ExecStart=/opt/trading-assistant/bin/backup.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/trading-assistant

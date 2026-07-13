@@ -1,0 +1,16 @@
+[risk]
+single_order_max_usd = 750
+single_symbol_max_usd = 1500
+theme_exposure_max_usd = 2000
+min_cash_after_order_usd = 500
+max_spread_bps = 80
+max_quote_age_seconds = 20
+max_price_move_bps_after_approval = 40
+max_daily_loss_usd = 150
+warrant_no_add_days_before_last_trade = 10
+
+[broker]
+default = "simulated"
+host = "127.0.0.1"
+port = 11111
+

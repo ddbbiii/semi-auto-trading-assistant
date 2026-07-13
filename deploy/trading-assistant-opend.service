@@ -1,0 +1,20 @@
+[Unit]
+Description=Futu OpenD quote gateway for OpenStock
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trading-assistant
+Group=trading-assistant
+WorkingDirectory=/opt/trading-assistant/opend
+ExecStart=/opt/trading-assistant/bin/run-opend.sh
+Restart=on-failure
+RestartSec=10
+StandardOutput=null
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
