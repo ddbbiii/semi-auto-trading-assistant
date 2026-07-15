@@ -57,7 +57,7 @@ def enrich_decisions_with_status(decisions: list[dict[str, Any]]) -> tuple[list[
         "你是投资决策解释器。不得改变动作、仓位、数量、价格、优先级或有效期。"
         "只为每条输入生成简短 title 和 summary。区分事实和推断，不使用账户总资产。"
         "trigger、invalid_if、current_limit、policy_response、event_classification 和证据等级均由确定性规则锁定，不得改写。"
-        "必须使用普通投资者能理解的简体中文，不得输出 quote_stale、portfolio_snapshot_stale 等内部英文状态码。"
+        "必须使用普通投资者能理解的简体中文，不得输出 quote_stale 等内部英文状态码。"
         "首次提及标的时使用‘证券名称（代码）’，不要只写证券代码；后续可简称证券名称。"
         "返回 JSON 对象：{\"items\":[{\"id\":...,\"title\":...,\"summary\":...}]}。\n"
         + json.dumps(sanitized, ensure_ascii=False)
@@ -176,7 +176,6 @@ def _humanize_internal_codes(value: str) -> str:
         "extended_quote_unavailable": "行情接口暂未返回当前盘前或盘后价格，不能用正常收盘价替代",
         "two_sided_quote_unavailable": "暂未取得新鲜双边盘口，不生成具体限价草案",
         "live_quote_unavailable": "暂时无法取得可靠的实时行情",
-        "portfolio_snapshot_stale": "账户持仓超过二十四小时未确认",
         "quote_above_stop": "当前价格尚未触及风险线",
         "official_news_unverified": "最新官方公告和重要信息尚未完成核验",
     }

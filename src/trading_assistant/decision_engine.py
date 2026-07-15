@@ -41,33 +41,7 @@ def build_decisions(
     settings = DEFAULT_RISK_SETTINGS | (risk_settings or {})
     as_of = _datetime(snapshot.get("as_of"))
     snapshot_age = max(0, int((now - as_of).total_seconds()))
-    snapshot_fresh = snapshot_age <= 24 * 60 * 60
     holdings = [item for item in snapshot.get("holdings", []) if float(item.get("quantity") or 0) > 0]
-
-    if not snapshot_fresh:
-        return [
-            _decision(
-                now=now,
-                symbol="PORTFOLIO",
-                name="全部账户",
-                title="先同步账户，再重新计算风险",
-                summary=f"当前持仓快照已超过 24 小时（约 {snapshot_age // 3600} 小时），所有个股数量建议已锁定。",
-                action="verify",
-                priority="urgent",
-                trigger="导入并确认最新账户快照后，系统会自动重新检查全部持仓。",
-                invalid_if="持仓、现金或未成交订单仍未同步时，不生成具体数量建议。",
-                confidence="high",
-                quality=DataQuality(
-                    provider=str(snapshot.get("source") or "snapshot"),
-                    observed_at=as_of,
-                    freshness_seconds=snapshot_age,
-                    source_type="snapshot",
-                    actionable=False,
-                    issues=["portfolio_snapshot_stale"],
-                ),
-                evidence=[Evidence(kind="position", title="持仓快照过期", detail=as_of.isoformat(), observed_at=as_of)],
-            )
-        ]
 
     total_cny = _portfolio_value_cny({**snapshot, "holdings": holdings})
     profiles = {
@@ -85,7 +59,7 @@ def build_decisions(
         symbol = str(holding["symbol"]).upper()
         name = str(holding.get("name") or symbol)
         quote = quotes.get(symbol, {})
-        quality = quote_quality(quote, now=now, snapshot_fresh=True, symbol=symbol)
+        quality = quote_quality(quote, now=now, symbol=symbol)
         profile = profiles.get(symbol, {})
         current_weight = _holding_weight_cny(holding, total_cny)
         thesis_evidence = _thesis_evidence(profile)
@@ -289,7 +263,7 @@ def build_opportunities(
     for item in watchlist or DEFAULT_WATCHLIST:
         symbol = str(item["symbol"]).upper()
         quote = quotes.get(symbol, {})
-        quality = quote_quality(quote, now=now, snapshot_fresh=True, symbol=symbol)
+        quality = quote_quality(quote, now=now, symbol=symbol)
         results.append(
             {
                 **item,
@@ -311,7 +285,6 @@ def quote_quality(
     quote: dict[str, Any],
     *,
     now: datetime,
-    snapshot_fresh: bool,
     symbol: str | None = None,
 ) -> DataQuality:
     observed = _datetime_or_none(quote.get("observed_at") or quote.get("fetched_at"))
@@ -340,9 +313,6 @@ def quote_quality(
         issues.append("market_closed_reference")
     if extended_session and quote.get("price_session") != market_session:
         issues.append("extended_quote_unavailable")
-        monitoring_ready = False
-    if not snapshot_fresh:
-        issues.append("portfolio_snapshot_stale")
         monitoring_ready = False
     has_two_sided_quote = all(_number(quote.get(key)) is not None and float(quote[key]) > 0 for key in ("bid", "ask"))
     execution_ready = bool(

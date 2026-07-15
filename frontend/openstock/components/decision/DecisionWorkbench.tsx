@@ -27,7 +27,6 @@ const internalCodeCopy: Record<string, string> = {
     extended_quote_unavailable: "暂未取得当前盘前或盘后价格，正常收盘价不会冒充实时行情",
     two_sided_quote_unavailable: "暂未取得新鲜双边盘口，不生成具体限价草案",
     live_quote_unavailable: "暂时无法取得可靠的实时行情",
-    portfolio_snapshot_stale: "账户持仓超过二十四小时未确认",
     quote_above_stop: "当前价格尚未触及风险线",
     official_news_unverified: "最新官方公告和重要信息尚未完成核验",
 };
@@ -75,7 +74,7 @@ export default function DecisionWorkbench() {
         </section>
 
         <section className="status-rail" aria-label="数据状态">
-            <StatusItem icon={<Database />} label="账户快照" value={data.snapshot.status === "fresh" ? "可用" : "已过期"} detail={relativeTime(data.snapshot.as_of)} tone={data.snapshot.status === "fresh" ? "good" : "warn"} />
+            <StatusItem icon={<Database />} label="持仓基线" value={data.snapshot.status === "confirmed" ? "已确认" : "尚未建立"} detail={data.snapshot.as_of ? `最近确认 ${relativeTime(data.snapshot.as_of)}` : "请先导入持仓"} tone={data.snapshot.status === "confirmed" ? "good" : "warn"} />
             <StatusItem icon={<TimerReset />} label="实时行情" value={`${quote?.live ?? 0}/${quote?.total ?? 0}`} detail={`${quote?.fallback ?? 0} 个使用兜底`} tone={quote?.status === "ok" ? "good" : "warn"} />
             <StatusItem icon={<Clock3 />} label="检查范围" value="全部持仓" detail="通用规则 + 用户规则" tone="neutral" />
             <div className="status-total"><span>组合估值</span><strong>{formatMoney(data.summary.estimated_total_cny)}</strong><small>按参考汇率估算</small></div>

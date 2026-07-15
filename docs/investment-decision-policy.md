@@ -29,8 +29,10 @@ sources. Grade C is an unverified lead and can only trigger further research.
 - A hard price exit is reserved for warrants/CBBCs or a user-confirmed tactical stop.
 - Being below target weight is insufficient to add. A current user-confirmed buy/add condition and valid data are
   both required; concrete quantity additionally requires an execution-ready quote.
-- Missing evidence, stale positions or unreliable quotes may produce `verify`. The engine does not force a buy or
-  sell conclusion when the inputs are incomplete.
+- The latest user-confirmed position snapshot remains the baseline until the user reports a holding change or
+  confirms a replacement snapshot. Elapsed time alone never creates an account-sync decision.
+- Missing evidence, an explicitly reported but unreconciled holding change, or unreliable quotes may produce
+  `verify`. The engine does not force a buy or sell conclusion when the inputs are incomplete.
 - Clearing a position deactivates its profile. Buying the same symbol later does not silently reactivate the old
   thesis or stops.
 

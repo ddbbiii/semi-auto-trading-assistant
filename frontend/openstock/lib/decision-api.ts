@@ -76,7 +76,7 @@ export type Holding = {
 };
 
 export type SnapshotMeta = {
-    status: "fresh" | "stale" | "missing";
+    status: "confirmed" | "missing";
     as_of?: string;
     source?: string;
     age_seconds?: number;

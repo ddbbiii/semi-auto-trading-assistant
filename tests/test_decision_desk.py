@@ -40,14 +40,11 @@ def unavailable_quotes(symbols: list[str], **_kwargs) -> dict[str, dict[str, obj
     }
 
 
-def test_stale_snapshot_blocks_precise_action() -> None:
+def test_confirmed_snapshot_remains_baseline_without_reported_changes() -> None:
     now = datetime(2026, 7, 13, 8, 30, tzinfo=timezone.utc)
     decisions = build_decisions(CURRENT_PORTFOLIO, unavailable_quotes([]), now=now)
 
-    sync = next(item for item in decisions if item.symbol == "PORTFOLIO")
-    assert sync.action == "verify"
-    assert sync.data_quality.actionable is False
-    assert sync.quantity_delta is None
+    assert all(item.symbol != "PORTFOLIO" for item in decisions)
 
 
 def test_user_confirmed_stop_builds_non_executable_exit_draft() -> None:
@@ -283,7 +280,6 @@ def test_delayed_intraday_quote_is_usable_for_monitoring_not_execution() -> None
             "observed_at": (now - timedelta(minutes=10)).isoformat(),
         },
         now=now,
-        snapshot_fresh=True,
         symbol="00001.HK",
     )
 
@@ -308,7 +304,6 @@ def test_fresh_premarket_quote_is_monitoring_data_not_execution_data() -> None:
             "observed_at": (now - timedelta(seconds=10)).isoformat(),
         },
         now=now,
-        snapshot_fresh=True,
         symbol="AAPL",
     )
 
@@ -332,7 +327,6 @@ def test_regular_close_cannot_masquerade_as_premarket_quote() -> None:
             "observed_at": now.isoformat(),
         },
         now=now,
-        snapshot_fresh=True,
         symbol="AAPL",
     )
 
@@ -351,7 +345,6 @@ def test_recent_closed_market_quote_is_reference_without_manual_verification() -
             "observed_at": datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc).isoformat(),
         },
         now=now,
-        snapshot_fresh=True,
         symbol="00001.HK",
     )
 
@@ -523,6 +516,7 @@ def test_dashboard_feedback_and_get_requests_have_no_email_side_effect() -> None
                 dashboard = client.get("/api/v1/dashboard")
                 assert dashboard.status_code == 200
                 payload = dashboard.json()
+                assert payload["snapshot"]["status"] == "confirmed"
                 assert 1 <= len(payload["decisions"]) <= 3
                 decision_id = payload["decisions"][0]["id"]
 

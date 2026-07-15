@@ -13,7 +13,7 @@ export default function HoldingsWorkbench() {
     if (!data) return <div className="page-loading">{error ? <><CircleAlert /><strong>{error}</strong></> : <><RefreshCw className="spin" /><strong>正在整理持仓…</strong></>}</div>;
 
     return <div className="page-stack">
-        <section className="page-intro"><div><p className="eyebrow">PORTFOLIO</p><h1>持仓与敞口</h1><p>保留原币账户视角，同时用人民币估算组合规模和主题集中度。</p></div><span className={`snapshot-chip ${data.snapshot.status}`}>{data.snapshot.status === "fresh" ? "账户可用" : "账户待同步"} · {relativeTime(data.snapshot.as_of)}</span></section>
+        <section className="page-intro"><div><p className="eyebrow">PORTFOLIO</p><h1>持仓与敞口</h1><p>保留原币账户视角，同时用人民币估算组合规模和主题集中度。</p></div><span className={`snapshot-chip ${data.snapshot.status}`}>{data.snapshot.status === "confirmed" ? "持仓已确认" : "尚未建立持仓"}{data.snapshot.as_of ? ` · ${relativeTime(data.snapshot.as_of)}` : ""}</span></section>
         <section className="portfolio-hero">
             <div className="portfolio-total"><WalletCards /><span>人民币估算总持仓</span><strong>{formatMoney(data.summary.estimated_total_cny)}</strong><small>当前汇率为参考值，不用于生成订单价格</small></div>
             <div className="currency-strip">{Object.entries(data.summary.original_currency_values).map(([currency, value]) => <div key={currency}><span>{currency}</span><strong>{formatMoney(value, currency)}</strong></div>)}</div>

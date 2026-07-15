@@ -464,7 +464,7 @@ def _snapshot_meta(snapshot: dict[str, Any] | None) -> dict[str, Any]:
         as_of = as_of.replace(tzinfo=timezone.utc)
     age = max(0, int((datetime.now(timezone.utc) - as_of).total_seconds()))
     return {
-        "status": "fresh" if age <= 86400 else "stale",
+        "status": "confirmed",
         "as_of": as_of.isoformat(),
         "source": snapshot.get("source"),
         "age_seconds": age,
