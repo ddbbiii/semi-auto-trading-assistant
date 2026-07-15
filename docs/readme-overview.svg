@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="480" viewBox="0 0 1200 480" role="img" aria-labelledby="title desc">
+  <title id="title">OpenStock 投资决策流程</title>
+  <desc id="desc">确认持仓和行情经过确定性风险规则，生成可解释、不可自动下单的决策。</desc>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#faf9f3"/><stop offset="1" stop-color="#e9f1ea"/></linearGradient><filter id="s"><feDropShadow dy="10" stdDeviation="13" flood-color="#294338" flood-opacity=".11"/></filter></defs>
+  <rect width="1200" height="480" rx="28" fill="url(#bg)"/>
+  <text x="60" y="70" font-family="Georgia, Microsoft YaHei, serif" font-size="36" font-weight="700" fill="#142b25">从“很多指标”变成“今天该处理什么”</text>
+  <text x="60" y="108" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" fill="#667870">数据不足时明确降级；系统生成草案，但绝不替你下单。</text>
+  <g filter="url(#s)" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <rect x="58" y="165" width="224" height="206" rx="22" fill="#fffdfa" stroke="#dfe6df"/>
+    <rect x="335" y="165" width="224" height="206" rx="22" fill="#fffdfa" stroke="#dfe6df"/>
+    <rect x="612" y="145" width="244" height="246" rx="26" fill="#0d5c50"/>
+    <rect x="909" y="165" width="232" height="206" rx="22" fill="#fffdfa" stroke="#dfe6df"/>
+  </g>
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <circle cx="102" cy="212" r="24" fill="#e3f3ef"/><text x="102" y="219" text-anchor="middle" font-size="21" font-weight="700" fill="#0a796b">1</text>
+    <text x="139" y="208" font-size="21" font-weight="700" fill="#18302a">确认持仓</text><text x="90" y="257" font-size="16" fill="#5f716b">截图 / CSV / XLSX</text><text x="90" y="290" font-size="16" fill="#5f716b">预览、修正后才入库</text><text x="90" y="323" font-size="16" fill="#5f716b">保留来源与更新时间</text>
+    <circle cx="379" cy="212" r="24" fill="#e3f3ef"/><text x="379" y="219" text-anchor="middle" font-size="21" font-weight="700" fill="#0a796b">2</text>
+    <text x="416" y="208" font-size="21" font-weight="700" fill="#18302a">补充行情</text><text x="367" y="257" font-size="16" fill="#5f716b">Futu OpenD 主源</text><text x="367" y="290" font-size="16" fill="#5f716b">Finnhub 回退</text><text x="367" y="323" font-size="16" fill="#5f716b">记录新鲜度与降级状态</text>
+    <circle cx="734" cy="199" r="28" fill="#ffffff22"/><text x="734" y="207" text-anchor="middle" font-size="23" font-weight="700" fill="white">3</text>
+    <text x="734" y="255" text-anchor="middle" font-size="23" font-weight="700" fill="white">确定性风险规则</text><text x="734" y="292" text-anchor="middle" font-size="16" fill="#d7eee9">仓位 · 集中度 · 数据过期</text><text x="734" y="323" text-anchor="middle" font-size="16" fill="#d7eee9">用户确认规则 · 透明计算</text><rect x="662" y="344" width="144" height="30" rx="15" fill="#ffffff1f"/><text x="734" y="365" text-anchor="middle" font-size="14" fill="white">模型不能改数值</text>
+    <circle cx="953" cy="212" r="24" fill="#fff0dc"/><text x="953" y="219" text-anchor="middle" font-size="21" font-weight="700" fill="#c46900">4</text>
+    <text x="990" y="208" font-size="21" font-weight="700" fill="#18302a">决策收件箱</text><text x="941" y="257" font-size="16" fill="#5f716b">最多三件优先事项</text><text x="941" y="290" font-size="16" fill="#5f716b">触发、失效与证据</text><text x="941" y="323" font-size="16" fill="#5f716b">执行 / 稍后 / 否决</text>
+  </g>
+  <path d="M291 269h27m-10-9 10 9-10 9M568 269h27m-10-9 10 9-10 9M865 269h27m-10-9 10 9-10 9" fill="none" stroke="#7ca79d" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="390" y="421" width="420" height="34" rx="17" fill="#f4e7d3"/><text x="600" y="444" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" font-weight="600" fill="#925b18">安全边界：只生成复核建议和订单草案，不连接真实下单</text>
+</svg>
