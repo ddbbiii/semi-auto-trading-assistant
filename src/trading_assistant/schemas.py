@@ -49,6 +49,12 @@ class Decision(BaseModel):
     quantity_delta: float | None = None
     trigger: str
     invalid_if: str
+    current_limit: str = ""
+    policy_response: Literal["review", "stop_adding", "reduce", "exit"] = "review"
+    event_classification: Literal["value_event", "sentiment_liquidity", "mixed", "unexplained", "not_applicable"] = "not_applicable"
+    information_grade: Literal["A", "B", "C", "unrated"] = "unrated"
+    research_confidence: Literal["high", "medium", "low", "unrated"] = "unrated"
+    investment_certainty: Literal["high", "medium", "low", "unrated"] = "unrated"
     confidence: Literal["high", "medium", "low"]
     data_quality: DataQuality
     evidence: list[Evidence]
@@ -77,11 +83,35 @@ class HoldingRiskProfileInput(BaseModel):
     stop_price: float | None = Field(default=None, gt=0)
     target_weight_percent: float | None = Field(default=None, ge=0, le=100)
     thesis_invalidation: str = Field(default="", max_length=1000)
+    thesis_summary: str = Field(default="", max_length=2000)
+    information_grade: Literal["A", "B", "C", "unrated"] = "unrated"
+    research_confidence: Literal["high", "medium", "low", "unrated"] = "unrated"
+    investment_certainty: Literal["high", "medium", "low", "unrated"] = "unrated"
+    strongest_bear_case: str = Field(default="", max_length=2000)
+    buy_add_conditions: str = Field(default="", max_length=2000)
+    reduce_conditions: str = Field(default="", max_length=2000)
+    exit_invalidation_conditions: str = Field(default="", max_length=2000)
+    bear_scenario: str = Field(default="", max_length=2000)
+    base_scenario: str = Field(default="", max_length=2000)
+    bull_scenario: str = Field(default="", max_length=2000)
+    position_intent: Literal["long_term", "tactical", "derivative"] = "long_term"
+    price_response: Literal["review", "stop_adding", "reduce", "exit"] = "review"
     expiry_date: date | None = None
 
     @model_validator(mode="after")
     def require_rule(self) -> HoldingRiskProfileInput:
-        if not any((self.stop_price, self.target_weight_percent is not None, self.thesis_invalidation.strip(), self.expiry_date)):
+        text_fields = (
+            self.thesis_invalidation,
+            self.thesis_summary,
+            self.strongest_bear_case,
+            self.buy_add_conditions,
+            self.reduce_conditions,
+            self.exit_invalidation_conditions,
+            self.bear_scenario,
+            self.base_scenario,
+            self.bull_scenario,
+        )
+        if not any((self.stop_price, self.target_weight_percent is not None, self.expiry_date, *(value.strip() for value in text_fields))):
             raise ValueError("每组用户规则至少需要填写一项。")
         return self
 

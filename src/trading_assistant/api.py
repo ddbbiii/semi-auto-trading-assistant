@@ -23,6 +23,7 @@ from .domain import Cash, Instrument, Market, PortfolioSnapshot, SecurityType, S
 from .drafts import create_limit_draft
 from .fx import get_rates_to_cny
 from .imports import preview_import_batch, snapshot_payload
+from .investment_policy import investment_policy_payload
 from .llm import enrich_decisions_with_status, status as llm_status
 from .notifications import EmailAlertConfig, maybe_send_decision_alert_email
 from .portfolio_state import CURRENT_PORTFOLIO, get_monitoring_payload, get_portfolio_payload
@@ -334,6 +335,10 @@ def create_app(store: Store | None = None, *, schedule: bool | None = None) -> F
     @app.get("/api/v1/settings/risk")
     def get_risk_configuration(db: Store = Depends(current_store)) -> dict[str, Any]:
         return _risk_configuration_payload(db)
+
+    @app.get("/api/v1/settings/investment-policy")
+    def get_investment_policy() -> dict[str, Any]:
+        return investment_policy_payload()
 
     @app.put("/api/v1/settings/risk")
     def update_risk_configuration(

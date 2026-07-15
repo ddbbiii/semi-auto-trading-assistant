@@ -164,6 +164,19 @@ class HoldingRiskProfileRecord(Base):
     stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     target_weight_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     thesis_invalidation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thesis_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    information_grade: Mapped[str] = mapped_column(String(16), default="unrated")
+    research_confidence: Mapped[str] = mapped_column(String(16), default="unrated")
+    investment_certainty: Mapped[str] = mapped_column(String(16), default="unrated")
+    strongest_bear_case: Mapped[str | None] = mapped_column(Text, nullable=True)
+    buy_add_conditions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reduce_conditions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    exit_invalidation_conditions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bear_scenario: Mapped[str | None] = mapped_column(Text, nullable=True)
+    base_scenario: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bull_scenario: Mapped[str | None] = mapped_column(Text, nullable=True)
+    position_intent: Mapped[str] = mapped_column(String(24), default="long_term")
+    price_response: Mapped[str] = mapped_column(String(24), default="review")
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
     activation_snapshot_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -474,6 +487,19 @@ class Store:
                 "stop_price": record.stop_price,
                 "target_weight_percent": record.target_weight_percent,
                 "thesis_invalidation": record.thesis_invalidation or "",
+                "thesis_summary": record.thesis_summary or "",
+                "information_grade": record.information_grade or "unrated",
+                "research_confidence": record.research_confidence or "unrated",
+                "investment_certainty": record.investment_certainty or "unrated",
+                "strongest_bear_case": record.strongest_bear_case or "",
+                "buy_add_conditions": record.buy_add_conditions or "",
+                "reduce_conditions": record.reduce_conditions or "",
+                "exit_invalidation_conditions": record.exit_invalidation_conditions or "",
+                "bear_scenario": record.bear_scenario or "",
+                "base_scenario": record.base_scenario or "",
+                "bull_scenario": record.bull_scenario or "",
+                "position_intent": record.position_intent or "long_term",
+                "price_response": record.price_response or "review",
                 "expiry_date": record.expiry_date.isoformat() if record.expiry_date else None,
                 "status": record.status,
                 "source": record.source,
@@ -510,6 +536,19 @@ class Store:
                 record.stop_price = item.get("stop_price")
                 record.target_weight_percent = item.get("target_weight_percent")
                 record.thesis_invalidation = str(item.get("thesis_invalidation") or "").strip() or None
+                record.thesis_summary = str(item.get("thesis_summary") or "").strip() or None
+                record.information_grade = str(item.get("information_grade") or "unrated")
+                record.research_confidence = str(item.get("research_confidence") or "unrated")
+                record.investment_certainty = str(item.get("investment_certainty") or "unrated")
+                record.strongest_bear_case = str(item.get("strongest_bear_case") or "").strip() or None
+                record.buy_add_conditions = str(item.get("buy_add_conditions") or "").strip() or None
+                record.reduce_conditions = str(item.get("reduce_conditions") or "").strip() or None
+                record.exit_invalidation_conditions = str(item.get("exit_invalidation_conditions") or "").strip() or None
+                record.bear_scenario = str(item.get("bear_scenario") or "").strip() or None
+                record.base_scenario = str(item.get("base_scenario") or "").strip() or None
+                record.bull_scenario = str(item.get("bull_scenario") or "").strip() or None
+                record.position_intent = str(item.get("position_intent") or "long_term")
+                record.price_response = str(item.get("price_response") or "review")
                 record.expiry_date = item.get("expiry_date")
                 record.status = "active" if symbol in held_symbols else "inactive_cleared"
                 record.activation_snapshot_id = snapshot_id if symbol in held_symbols else None

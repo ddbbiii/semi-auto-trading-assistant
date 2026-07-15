@@ -89,6 +89,7 @@ def build_decisions(
         profile = profiles.get(symbol, {})
         current_weight = _holding_weight_cny(holding, total_cny)
         thesis_evidence = _thesis_evidence(profile)
+        profile_context = _profile_context(profile)
 
         if current_weight is not None and current_weight > max_weight:
             candidates.append(
@@ -98,15 +99,17 @@ def build_decisions(
                     name=name,
                     title=f"{name} 单一持仓集中度偏高",
                     summary=f"当前估算仓位 {current_weight:.2f}%，超过你设置的 {max_weight:.2f}% 集中度提醒线。",
-                    action="reduce",
+                    action="verify",
                     priority="high",
                     current_weight=current_weight,
-                    target_weight=max_weight,
-                    trigger=f"确认账户快照与主题敞口后，再决定是否将仓位降到 {max_weight:.2f}% 以下。",
-                    invalid_if="总资产、现金或其他账户持仓尚未同步时，只作为集中度提醒，不计算减仓数量。",
+                    trigger="复核该标的对组合的风险贡献、波动、流动性、相关性、主题敞口和机会成本。",
+                    invalid_if="若完整账户和相关敞口确认后风险贡献可接受，则不需要仅因名义仓位越线而减仓。",
+                    current_limit="集中度提醒线不是目标仓位，不能单独生成减仓数量。",
+                    policy_response="review",
                     confidence="high",
                     quality=_snapshot_quality(snapshot, as_of, snapshot_age),
                     evidence=[Evidence(kind="position", title="通用集中度规则", detail=f"{current_weight:.2f}% > {max_weight:.2f}%", observed_at=as_of), *thesis_evidence],
+                    **profile_context,
                 )
             )
 
@@ -120,14 +123,18 @@ def build_decisions(
                     name=name,
                     title=f"{name} 当日{direction}幅度异常",
                     summary=f"API 行情显示当前变动 {change_percent:+.2f}%，超过你设置的 {move_threshold:.2f}% 异常波动线。",
-                    action="watch",
+                    action="verify",
                     priority="high",
                     current_weight=current_weight,
                     trigger="核对公告、成交量和市场整体变化，确认是否出现影响原投资逻辑的新信息。",
                     invalid_if="行情源异常、复权口径变化或市场整体同步波动时，不单凭涨跌幅采取动作。",
+                    current_limit="事件性质尚未归因；需要先区分价值事件、情绪流动性、混合因素或无法解释。",
+                    policy_response="review",
+                    event_classification="unexplained",
                     confidence="medium",
                     quality=quality,
                     evidence=[Evidence(kind="price", title="通用异常波动规则", detail=f"{change_percent:+.2f}%；阈值 ±{move_threshold:.2f}%", observed_at=quality.observed_at), *thesis_evidence],
+                    **profile_context,
                 )
             )
 
@@ -147,42 +154,84 @@ def build_decisions(
                         current_weight=current_weight,
                         trigger="复核最后交易日、条款、流动性和时间价值，再决定是否继续持有。",
                         invalid_if="到期日或产品条款尚未由券商页面确认时，不生成具体退出价格。",
+                        current_limit="到期预警只说明时间约束增强，仍需核对条款、价差、正股和可交易性。",
+                        policy_response="review",
                         confidence="high",
                         quality=_snapshot_quality(snapshot, as_of, snapshot_age),
                         evidence=[Evidence(kind="risk_rule", title="通用到期预警", detail=f"到期日 {expiry.isoformat()}；剩余 {days_left} 天"), *thesis_evidence],
+                        **profile_context,
                     )
                 )
 
         stop_price = _number(profile.get("stop_price"))
         current_price = _number(quote.get("price"))
-        if stop_price is not None and quality.actionable and current_price is not None and current_price <= stop_price:
-            quantity = float(holding.get("quantity") or 0)
-            quantity_delta = -quantity if quality.execution_ready else None
+        if stop_price is not None and (not quality.actionable or current_price is None):
             candidates.append(
                 _decision(
                     now=now,
                     symbol=symbol,
                     name=name,
-                    title=f"{name} 已触及你确认的风险线",
-                    summary=f"最近可用价 {current_price:.3f} 不高于你设置的 {stop_price:.3f}。该阈值来自用户规则，不是模型生成。",
-                    action="exit",
-                    priority="urgent",
+                    title=f"{name} 的价格风险线等待核验",
+                    summary=f"你设置了 {stop_price:.3f} 的价格复核线，但当前没有足够新鲜的行情判断是否触发。",
+                    action="verify",
+                    priority="high",
                     current_weight=current_weight,
-                    target_weight=0,
+                    trigger="取得可靠行情，并按工具类型重新解释价格线。",
+                    invalid_if="只有截图价、延迟价或无法确认交易时段时，本次核验不可操作。",
+                    current_limit="数据不足，不能判断是否触线，更不能生成交易数量。",
+                    policy_response="review",
+                    confidence="medium",
+                    quality=quality,
+                    evidence=[Evidence(kind="risk_rule", title="用户确认价格复核线", detail=f"{stop_price:.3f}"), *thesis_evidence],
+                    **profile_context,
+                )
+            )
+        elif stop_price is not None and current_price is not None and current_price <= stop_price:
+            quantity = float(holding.get("quantity") or 0)
+            security_type = str(holding.get("security_type") or "stock").lower()
+            position_intent = str(profile.get("position_intent") or "long_term")
+            configured_response = str(profile.get("price_response") or "review")
+            hard_exit = security_type in {"warrant", "cbbc"} or (
+                position_intent == "tactical" and configured_response == "exit"
+            )
+            response = "exit" if hard_exit else configured_response if configured_response in {"review", "stop_adding", "reduce"} else "review"
+            action = "exit" if hard_exit else "reduce" if response == "reduce" else "verify"
+            quantity_delta = -quantity if hard_exit and quality.execution_ready else None
+            candidates.append(
+                _decision(
+                    now=now,
+                    symbol=symbol,
+                    name=name,
+                    title=f"{name} 已触及用户确认的价格复核线",
+                    summary=f"最近可用价 {current_price:.3f} 不高于 {stop_price:.3f}。系统按{_intent_label(position_intent)}语义处理，不把普通长期股票机械判定为清仓。",
+                    action=action,
+                    priority="urgent" if hard_exit else "high",
+                    current_weight=current_weight,
+                    target_weight=0 if hard_exit else None,
                     quantity_delta=quantity_delta,
-                    trigger=f"复核最新可成交价仍不高于 {stop_price:.3f} 后，再决定是否执行退出。",
-                    invalid_if="报价失真、产品条款变化或你已修改投资计划时，先更新规则再操作。",
+                    trigger=f"确认最新价格仍不高于 {stop_price:.3f}，并复核公告、行业、资金面和投资论文。",
+                    invalid_if=_exit_condition(profile) or "报价失真、事件归因未完成或投资计划已更新时，先修改规则。",
+                    current_limit=(
+                        "衍生品或已确认的战术价格止损允许硬退出；仍只生成草案。"
+                        if hard_exit
+                        else "长期股票的价格线只触发复核、暂停加仓或减仓检查，不自动清仓。"
+                    ),
+                    policy_response=response,
                     confidence="high",
                     quality=quality,
-                    evidence=[Evidence(kind="risk_rule", title="用户确认风险线", detail=f"最新价 {current_price:.3f} ≤ {stop_price:.3f}", observed_at=quality.observed_at), *thesis_evidence],
-                    order=_exit_order(symbol, quantity, quote, now) if quality.execution_ready else None,
+                    evidence=[Evidence(kind="risk_rule", title="用户确认价格复核线", detail=f"最新价 {current_price:.3f} ≤ {stop_price:.3f}", observed_at=quality.observed_at), *thesis_evidence],
+                    order=_exit_order(symbol, quantity, quote, now) if hard_exit and quality.execution_ready else None,
+                    **profile_context,
                 )
             )
 
         target_weight = _number(profile.get("target_weight_percent"))
         if target_weight is not None and current_weight is not None and abs(current_weight - target_weight) >= target_tolerance:
             reducing = current_weight > target_weight
-            quantity_delta = _target_quantity_delta(holding, quote, total_cny, target_weight) if quality.execution_ready else None
+            condition = str(profile.get("reduce_conditions") if reducing else profile.get("buy_add_conditions") or "").strip()
+            condition_ready = bool(condition) and quality.actionable
+            quantity_delta = _target_quantity_delta(holding, quote, total_cny, target_weight) if condition_ready and quality.execution_ready else None
+            action = ("reduce" if reducing else "add") if condition_ready else "verify"
             candidates.append(
                 _decision(
                     now=now,
@@ -190,16 +239,27 @@ def build_decisions(
                     name=name,
                     title=f"{name} 偏离你设置的目标仓位",
                     summary=f"当前估算仓位 {current_weight:.2f}%，目标 {target_weight:.2f}%，偏离超过 {target_tolerance:.2f} 个百分点。",
-                    action="reduce" if reducing else "add",
+                    action=action,
                     priority="normal",
                     current_weight=current_weight,
                     target_weight=target_weight,
                     quantity_delta=quantity_delta,
-                    trigger="确认账户总资产、可用数量和最新价格后，再生成或复核调仓草案。",
-                    invalid_if="目标仓位、账户规模或投资逻辑已变化时，先修改用户规则。",
+                    trigger=condition or ("先填写并确认减仓条件。" if reducing else "先填写并确认买入或加仓条件。"),
+                    invalid_if=_exit_condition(profile) or "目标仓位、账户规模或投资论文变化时，先更新用户规则。",
+                    current_limit=(
+                        "条件已确认，但盘口未就绪，暂不计算具体数量。"
+                        if condition and not quality.execution_ready
+                        else "目标仓位偏离本身不是交易理由；缺少用户确认条件时只能核验。"
+                        if not condition
+                        else "行情不可用于当前判断，等待 API 恢复后再检查条件。"
+                        if not quality.actionable
+                        else "已满足规则前置条件；数量仅在账户和双边行情就绪时计算。"
+                    ),
+                    policy_response="reduce" if reducing and condition_ready else "review",
                     confidence="high",
                     quality=quality,
                     evidence=[Evidence(kind="risk_rule", title="用户确认目标仓位", detail=f"当前 {current_weight:.2f}%；目标 {target_weight:.2f}%"), *thesis_evidence],
+                    **profile_context,
                 )
             )
 
@@ -338,10 +398,43 @@ def _profile_expiry(profile: dict[str, Any], holding: dict[str, Any]) -> date | 
 
 
 def _thesis_evidence(profile: dict[str, Any]) -> list[Evidence]:
-    text = str(profile.get("thesis_invalidation") or "").strip()
-    if not text:
-        return []
-    return [Evidence(kind="risk_rule", title="用户记录的投资逻辑失效条件", detail=text)]
+    entries = (
+        ("用户记录的投资论文", profile.get("thesis_summary")),
+        ("信息等级", profile.get("information_grade") if profile.get("information_grade") != "unrated" else None),
+        ("最强反方", profile.get("strongest_bear_case")),
+        ("买入或加仓前置条件", profile.get("buy_add_conditions")),
+        ("减仓条件", profile.get("reduce_conditions")),
+        ("退出或失效条件", _exit_condition(profile)),
+        ("悲观情景", profile.get("bear_scenario")),
+        ("基准情景", profile.get("base_scenario")),
+        ("乐观情景", profile.get("bull_scenario")),
+    )
+    return [
+        Evidence(kind="risk_rule", title=title, detail=str(detail).strip())
+        for title, detail in entries
+        if str(detail or "").strip()
+    ]
+
+
+def _exit_condition(profile: dict[str, Any]) -> str:
+    return str(profile.get("exit_invalidation_conditions") or profile.get("thesis_invalidation") or "").strip()
+
+
+def _profile_context(profile: dict[str, Any]) -> dict[str, str]:
+    return {
+        "information_grade": _choice(profile.get("information_grade"), {"A", "B", "C"}, "unrated"),
+        "research_confidence": _choice(profile.get("research_confidence"), {"high", "medium", "low"}, "unrated"),
+        "investment_certainty": _choice(profile.get("investment_certainty"), {"high", "medium", "low"}, "unrated"),
+    }
+
+
+def _choice(value: Any, allowed: set[str], default: str) -> str:
+    text = str(value or default)
+    return text if text in allowed else default
+
+
+def _intent_label(value: str) -> str:
+    return {"long_term": "长期股票", "tactical": "战术交易", "derivative": "衍生品"}.get(value, "长期股票")
 
 
 def _exit_order(symbol: str, quantity: float, quote: dict[str, Any], now: datetime) -> OrderDraft | None:
@@ -391,6 +484,12 @@ def _decision(
     priority: str,
     trigger: str,
     invalid_if: str,
+    current_limit: str = "",
+    policy_response: str = "review",
+    event_classification: str = "not_applicable",
+    information_grade: str = "unrated",
+    research_confidence: str = "unrated",
+    investment_certainty: str = "unrated",
     confidence: str,
     quality: DataQuality,
     evidence: list[Evidence],
@@ -412,6 +511,12 @@ def _decision(
         quantity_delta=quantity_delta,
         trigger=trigger,
         invalid_if=invalid_if,
+        current_limit=current_limit,
+        policy_response=policy_response,  # type: ignore[arg-type]
+        event_classification=event_classification,  # type: ignore[arg-type]
+        information_grade=information_grade,  # type: ignore[arg-type]
+        research_confidence=research_confidence,  # type: ignore[arg-type]
+        investment_certainty=investment_certainty,  # type: ignore[arg-type]
         confidence=confidence,  # type: ignore[arg-type]
         data_quality=quality,
         evidence=evidence,

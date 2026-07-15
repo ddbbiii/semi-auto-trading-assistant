@@ -31,6 +31,12 @@ export type Decision = {
     quantity_delta?: number | null;
     trigger: string;
     invalid_if: string;
+    current_limit: string;
+    policy_response: "review" | "stop_adding" | "reduce" | "exit";
+    event_classification: "value_event" | "sentiment_liquidity" | "mixed" | "unexplained" | "not_applicable";
+    information_grade: "A" | "B" | "C" | "unrated";
+    research_confidence: "high" | "medium" | "low" | "unrated";
+    investment_certainty: "high" | "medium" | "low" | "unrated";
     confidence: "high" | "medium" | "low";
     data_quality: DataQuality;
     evidence: Evidence[];
@@ -121,10 +127,43 @@ export type HoldingRiskProfile = {
     stop_price?: number | null;
     target_weight_percent?: number | null;
     thesis_invalidation: string;
+    thesis_summary: string;
+    information_grade: "A" | "B" | "C" | "unrated";
+    research_confidence: "high" | "medium" | "low" | "unrated";
+    investment_certainty: "high" | "medium" | "low" | "unrated";
+    strongest_bear_case: string;
+    buy_add_conditions: string;
+    reduce_conditions: string;
+    exit_invalidation_conditions: string;
+    bear_scenario: string;
+    base_scenario: string;
+    bull_scenario: string;
+    position_intent: "long_term" | "tactical" | "derivative";
+    price_response: "review" | "stop_adding" | "reduce" | "exit";
     expiry_date?: string | null;
     status: "active" | "inactive_cleared" | "disabled_by_user";
     source: string;
     updated_at: string;
+};
+
+export type InvestmentPolicy = {
+    version: string;
+    name: string;
+    principles: string[];
+    research: {
+        thesis: string[];
+        information_grades: Record<"A" | "B" | "C", string>;
+        counter_case: string[];
+    };
+    scenarios: { required: string[]; rule: string };
+    entry_and_add: string[];
+    review: {
+        clean_slate: string;
+        event_classes: Record<string, string>;
+        responses: Record<string, string>;
+    };
+    instrument_rules: Record<string, string>;
+    exit_reasons: string[];
 };
 
 export type RiskConfiguration = {

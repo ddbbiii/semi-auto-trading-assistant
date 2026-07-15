@@ -373,7 +373,7 @@ def test_zero_quantity_warrant_does_not_create_verification_decision() -> None:
     assert all(item.symbol != "00001.HK" for item in build_decisions(snapshot, unavailable_quotes(["00001.HK"]), now=now))
 
 
-def test_generic_concentration_rule_applies_without_symbol_specific_logic() -> None:
+def test_generic_concentration_rule_requires_review_instead_of_forcing_reduction() -> None:
     now = datetime.now(timezone.utc)
     snapshot = {
         "as_of": now.isoformat(),
@@ -404,10 +404,69 @@ def test_generic_concentration_rule_applies_without_symbol_specific_logic() -> N
         if decision.symbol == "AAPL"
     )
 
-    assert item.action == "reduce"
+    assert item.action == "verify"
+    assert item.policy_response == "review"
     assert item.name == "Apple"
     assert item.data_quality.actionable is True
-    assert item.target_weight_percent == 20
+    assert item.target_weight_percent is None
+    assert "不是目标仓位" in item.current_limit
+
+
+def test_long_term_stock_price_line_does_not_force_exit() -> None:
+    now = datetime.now(timezone.utc)
+    snapshot = {
+        "as_of": now.isoformat(), "source": "synthetic_test", "account": {},
+        "holdings": [{"symbol": "AAPL", "name": "Apple", "market": "US", "security_type": "stock", "quantity": 10, "currency": "USD", "market_value": 700, "price": 70, "average_cost": 90}],
+    }
+    quotes = {"AAPL": {"status": "live", "provider": "test", "price": 70, "bid": 69.9, "ask": 70.1, "market_session": "regular", "price_session": "regular", "observed_at": now.isoformat()}}
+    item = build_decisions(
+        snapshot, quotes, risk_settings={"max_single_position_percent": 100},
+        risk_profiles=[{"symbol": "AAPL", "status": "active", "stop_price": 75, "position_intent": "long_term", "price_response": "exit", "thesis_summary": "可核验的长期论文", "information_grade": "A"}], now=now,
+    )[0]
+
+    assert item.action == "verify"
+    assert item.policy_response == "review"
+    assert item.order_draft is None
+    assert item.information_grade == "A"
+    assert "不自动清仓" in item.current_limit
+
+
+def test_underweight_target_without_buy_condition_only_requests_verification() -> None:
+    now = datetime.now(timezone.utc)
+    snapshot = {
+        "as_of": now.isoformat(), "source": "synthetic_test", "account": {},
+        "holdings": [
+            {"symbol": "AAPL", "name": "Apple", "market": "US", "security_type": "stock", "quantity": 1, "currency": "USD", "market_value": 100, "price": 100, "average_cost": 90},
+            {"symbol": "MSFT", "name": "Microsoft", "market": "US", "security_type": "stock", "quantity": 9, "currency": "USD", "market_value": 900, "price": 100, "average_cost": 100},
+        ],
+    }
+    quotes = {"AAPL": {"status": "live", "provider": "test", "price": 100, "bid": 99.9, "ask": 100.1, "market_session": "regular", "price_session": "regular", "observed_at": now.isoformat()}}
+    item = next(item for item in build_decisions(snapshot, quotes, risk_settings={"max_single_position_percent": 100}, risk_profiles=[{"symbol": "AAPL", "status": "active", "target_weight_percent": 20}], now=now) if item.symbol == "AAPL")
+
+    assert item.action == "verify"
+    assert item.quantity_delta is None
+    assert "偏离本身不是交易理由" in item.current_limit
+
+
+def test_underweight_target_with_confirmed_condition_can_add() -> None:
+    now = datetime.now(timezone.utc)
+    snapshot = {
+        "as_of": now.isoformat(), "source": "synthetic_test", "account": {},
+        "holdings": [
+            {"symbol": "AAPL", "name": "Apple", "market": "US", "security_type": "stock", "quantity": 1, "currency": "USD", "market_value": 100, "price": 100, "average_cost": 90},
+            {"symbol": "MSFT", "name": "Microsoft", "market": "US", "security_type": "stock", "quantity": 9, "currency": "USD", "market_value": 900, "price": 100, "average_cost": 100},
+        ],
+    }
+    quotes = {"AAPL": {"status": "live", "provider": "test", "price": 100, "bid": 99.9, "ask": 100.1, "market_session": "regular", "price_session": "regular", "observed_at": now.isoformat()}}
+    item = next(item for item in build_decisions(
+        snapshot, quotes, risk_settings={"max_single_position_percent": 100},
+        risk_profiles=[{"symbol": "AAPL", "status": "active", "target_weight_percent": 20, "buy_add_conditions": "论文有效且风险收益改善", "research_confidence": "high", "investment_certainty": "medium"}], now=now,
+    ) if item.symbol == "AAPL")
+
+    assert item.action == "add"
+    assert item.quantity_delta is not None
+    assert item.research_confidence == "high"
+    assert item.investment_certainty == "medium"
 
 
 def test_no_symbol_specific_stop_exists_without_user_profile() -> None:

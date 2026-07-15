@@ -14,6 +14,11 @@ const evidenceKindCopy: Record<string, string> = {
     price: "价格", position: "持仓", risk_rule: "风控规则", filing: "公告", news: "新闻", system: "数据状态",
 };
 
+const responseCopy: Record<Decision["policy_response"], string> = {
+    review: "复核", stop_adding: "暂停加仓", reduce: "减仓检查", exit: "退出",
+};
+const confidenceCopy = { high: "高", medium: "中", low: "低", unrated: "未评定" };
+
 const internalCodeCopy: Record<string, string> = {
     quote_stale: "行情超过当前场景允许的监控时限，系统将通过 API 自动重试",
     quote_delayed: "行情有短暂延迟，但仍可用于日常风险监控",
@@ -147,13 +152,19 @@ function DecisionCard({ decision, rank, onChanged }: { decision: Decision; rank:
                 <div className={`quality-badge ${decision.data_quality.actionable ? "actionable" : "blocked"}`}>{decision.data_quality.actionable ? <Check /> : <ShieldAlert />}{qualityLabel}</div>
             </div>
             <h3>{decision.title}</h3><p className="decision-summary">{decision.summary}</p>
+            <div className="decision-policy-strip">
+                <span>响应级别 <strong>{responseCopy[decision.policy_response]}</strong></span>
+                <span>证据等级 <strong>{decision.information_grade === "unrated" ? "未评定" : decision.information_grade}</strong></span>
+                <span>研究置信度 <strong>{confidenceCopy[decision.research_confidence]}</strong></span>
+                <span>投资确定性 <strong>{confidenceCopy[decision.investment_certainty]}</strong></span>
+            </div>
             <div className="decision-numbers">
                 <NumberCell label={decision.data_quality.actionable ? "当前仓位" : "估算仓位"} value={decision.current_weight_percent == null ? "—" : `${decision.current_weight_percent}%`} />
                 <NumberCell label="目标仓位" value={decision.target_weight_percent == null ? "暂不计算" : `${decision.target_weight_percent}%`} />
                 <NumberCell label="数量变化" value={decision.quantity_delta == null ? "暂不计算" : `${decision.quantity_delta > 0 ? "+" : ""}${decision.quantity_delta}`} />
                 <NumberCell label="有效期" value={new Date(decision.expires_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} />
             </div>
-            <div className="condition-grid"><div><span>{decision.data_quality.actionable ? "触发条件" : "恢复计算需要"}</span><p>{humanize(decision.trigger)}</p></div><div><span>{decision.data_quality.actionable ? "失效条件" : "当前限制"}</span><p>{humanize(decision.invalid_if)}</p></div></div>
+            <div className="condition-grid"><div><span>{decision.data_quality.actionable ? "触发依据" : "恢复计算需要"}</span><p>{humanize(decision.trigger)}</p></div><div><span>当前限制</span><p>{humanize(decision.current_limit || "无额外限制")}</p></div><div><span>失效条件</span><p>{humanize(decision.invalid_if)}</p></div></div>
             {decision.order_draft ? <div className="order-draft"><ArrowDownRight /><div><strong>限价草案：卖出 {decision.order_draft.quantity}</strong><span>{decision.order_draft.limit_price_low}–{decision.order_draft.limit_price_high} · 仅供复制，不会自动提交</span></div></div> : null}
             <details className="evidence"><summary>查看 {decision.evidence.length} 条判断依据<ChevronDown /></summary><div>{decision.evidence.map((item, index) => <div className="evidence-row" key={`${item.title}-${index}`}><span>{evidenceKindCopy[item.kind] || "依据"}</span><p><strong>{item.title}</strong>{humanize(item.detail)}</p></div>)}</div></details>
             <div className="decision-actions">

@@ -40,6 +40,12 @@ def enrich_decisions_with_status(decisions: list[dict[str, Any]]) -> tuple[list[
             "target_weight_percent": item.get("target_weight_percent"),
             "trigger": item["trigger"],
             "invalid_if": item["invalid_if"],
+            "current_limit": item.get("current_limit", ""),
+            "policy_response": item.get("policy_response", "review"),
+            "event_classification": item.get("event_classification", "not_applicable"),
+            "information_grade": item.get("information_grade", "unrated"),
+            "research_confidence": item.get("research_confidence", "unrated"),
+            "investment_certainty": item.get("investment_certainty", "unrated"),
             "evidence": [
                 {"kind": evidence["kind"], "title": evidence["title"], "detail": _humanize_internal_codes(evidence["detail"])}
                 for evidence in item.get("evidence", [])
@@ -49,18 +55,18 @@ def enrich_decisions_with_status(decisions: list[dict[str, Any]]) -> tuple[list[
     ]
     prompt = (
         "你是投资决策解释器。不得改变动作、仓位、数量、价格、优先级或有效期。"
-        "只为每条输入生成简短 title、summary、trigger、invalid_if。区分事实和推断，不使用账户总资产。"
+        "只为每条输入生成简短 title 和 summary。区分事实和推断，不使用账户总资产。"
+        "trigger、invalid_if、current_limit、policy_response、event_classification 和证据等级均由确定性规则锁定，不得改写。"
         "必须使用普通投资者能理解的简体中文，不得输出 quote_stale、portfolio_snapshot_stale 等内部英文状态码。"
         "首次提及标的时使用‘证券名称（代码）’，不要只写证券代码；后续可简称证券名称。"
-        "当数据不可操作时，trigger 应说明恢复计算需要什么，invalid_if 应说明当前受什么限制。"
-        "返回 JSON 对象：{\"items\":[{\"id\":...,\"title\":...,\"summary\":...,\"trigger\":...,\"invalid_if\":...}]}。\n"
+        "返回 JSON 对象：{\"items\":[{\"id\":...,\"title\":...,\"summary\":...}]}。\n"
         + json.dumps(sanitized, ensure_ascii=False)
     )
     try:
         generated = {item["id"]: item for item in _request_json(prompt).get("items", [])}
     except Exception:
         return decisions, "failed_fallback"
-    allowed = {"title", "summary", "trigger", "invalid_if"}
+    allowed = {"title", "summary"}
     return (
         [item | {key: value for key, value in generated.get(item["id"], {}).items() if key in allowed} for item in decisions],
         "used",
