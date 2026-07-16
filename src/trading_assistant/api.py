@@ -24,7 +24,7 @@ from .drafts import create_limit_draft
 from .fx import get_rates_to_cny
 from .imports import preview_import_batch, snapshot_payload
 from .investment_policy import investment_policy_payload
-from .llm import enrich_decisions_with_status, status as llm_status
+from .llm import analyze_refresh_with_report, status as llm_status, test_connection as test_llm_connection
 from .notifications import EmailAlertConfig, maybe_send_decision_alert_email
 from .portfolio_state import CURRENT_PORTFOLIO, get_monitoring_payload, get_portfolio_payload
 from .providers import futu_status, get_quotes
@@ -43,6 +43,12 @@ class DecisionRefreshResult:
     checked_holdings: int
     active_user_rules: int
     model_status: str
+    model_summary: str | None
+    analysis_report: dict[str, Any] | None
+    market_data_status: str
+    market_data_live: int
+    market_data_total: int
+    market_data_fallback: int
     completed_at: datetime
 
     def payload(self) -> dict[str, Any]:
@@ -55,8 +61,15 @@ class DecisionRefreshResult:
                 "active_user_rules": self.active_user_rules,
                 "decision_count": len(self.decisions),
                 "model_status": self.model_status,
+                "model_summary": self.model_summary,
+                "backend_status": "success",
+                "market_data_status": self.market_data_status,
+                "market_data_live": self.market_data_live,
+                "market_data_total": self.market_data_total,
+                "market_data_fallback": self.market_data_fallback,
                 "completed_at": self.completed_at.isoformat(),
             },
+            "analysis_report": self.analysis_report,
         }
 
 
@@ -73,24 +86,24 @@ def build_health_payload() -> dict[str, Any]:
 def build_demo_draft_payload() -> dict[str, Any]:
     config = load_config()
     broker = SimulatedBroker(cash_usd=3000)
-    soxx = Instrument(
+    demo_instrument = Instrument(
         symbol="AAPL",
         market=Market.US,
-        security_type=SecurityType.ETF,
-        theme="ai_semiconductor_storage",
-        name="iShares Semiconductor ETF",
+        security_type=SecurityType.STOCK,
+        theme="consumer_technology",
+        name="Apple Inc.",
     )
-    broker.set_quote(soxx, bid=580.0, ask=580.8, last=580.4)
+    broker.set_quote(demo_instrument, bid=199.5, ask=200.0, last=199.8)
     draft = create_limit_draft(
-        soxx,
+        demo_instrument,
         side=Side.BUY,
         quantity=1,
-        limit_price=575.0,
-        reason="Demo only: semiconductor starter position pullback draft.",
-        failure_plan="If price rebounds above the validity band, regenerate the draft.",
+        limit_price=199.0,
+        reason="Synthetic demo only: starter position draft.",
+        failure_plan="If the quote leaves the validity band, regenerate the draft.",
     )
     portfolio = PortfolioSnapshot(cash=Cash(available_usd=3000), holdings=())
-    risk = RiskEngine(config.risk).check(draft, broker.get_quote(soxx), portfolio)
+    risk = RiskEngine(config.risk).check(draft, broker.get_quote(demo_instrument), portfolio)
     AuditLog("data/runtime/audit.sqlite3").append(
         "demo_draft_created", {"draft": draft, "risk": risk}, order_intent_id=draft.order_intent_id
     )
@@ -171,7 +184,9 @@ def create_app(store: Store | None = None, *, schedule: bool | None = None) -> F
             "snapshot": _snapshot_meta(snapshot),
             "account": snapshot.get("account", {}),
             "summary": _portfolio_summary(snapshot, db),
+            "llm": llm_status(),
             "decisions": decisions[:3],
+            "analysis_report": db.latest_analysis_report(),
             "stable_holdings": [
                 item
                 for item in snapshot["holdings"]
@@ -320,6 +335,11 @@ def create_app(store: Store | None = None, *, schedule: bool | None = None) -> F
             "analysis_schedule": _analysis_settings_payload(db),
         }
 
+    @app.post("/api/v1/system/test-llm")
+    def system_test_llm() -> dict[str, Any]:
+        """Test the configured model connection without changing portfolio or decisions."""
+        return test_llm_connection()
+
     @app.get("/api/v1/settings/analysis")
     def get_analysis_settings(db: Store = Depends(current_store)) -> dict[str, Any]:
         return _analysis_settings_payload(db)
@@ -386,6 +406,15 @@ def refresh_decisions(
         run_id = store.start_sync(sync_source)
         try:
             snapshot = _snapshot_with_quotes(store, force_quotes=True)
+            quote_summary = snapshot.get("live_quote_summary") or {}
+            market_data_status = {
+                "ok": "success",
+                "partial": "partial",
+                "unavailable": "failed",
+            }.get(str(quote_summary.get("status")), "failed")
+            market_data_live = int(quote_summary.get("live") or 0)
+            market_data_total = int(quote_summary.get("total") or 0)
+            market_data_fallback = int(quote_summary.get("fallback_provider_count") or 0)
             store.reconcile_risk_profiles(snapshot)
             quotes = {item["symbol"]: item.get("live_quote", {}) for item in snapshot["holdings"]}
             profiles = store.risk_profiles(active_only=True)
@@ -399,8 +428,22 @@ def refresh_decisions(
                 )
             ]
             model_status = "skipped_lightweight"
+            model_summary = None
+            analysis_report = None
             if enrich:
-                decisions, model_status = enrich_decisions_with_status(decisions)
+                decisions, model_status, model_summary, analysis_report = analyze_refresh_with_report(
+                    decisions,
+                    _model_analysis_context(snapshot, profiles),
+                )
+                completed_at = datetime.now(timezone.utc)
+                analysis_report = analysis_report | {
+                    "generated_at": completed_at.isoformat(),
+                    "source": sync_source,
+                    "model_status": model_status,
+                }
+                store.save_analysis_report(analysis_report)
+            else:
+                completed_at = datetime.now(timezone.utc)
             store.replace_decisions(decisions)
             if notify:
                 actionable = [
@@ -418,7 +461,13 @@ def refresh_decisions(
                 checked_holdings=checked,
                 active_user_rules=len(profiles),
                 model_status=model_status,
-                completed_at=datetime.now(timezone.utc),
+                model_summary=model_summary,
+                analysis_report=analysis_report,
+                market_data_status=market_data_status,
+                market_data_live=market_data_live,
+                market_data_total=market_data_total,
+                market_data_fallback=market_data_fallback,
+                completed_at=completed_at,
             )
         except Exception as exc:
             store.finish_sync(run_id, status="failed", detail=str(exc)[:1000])
@@ -434,12 +483,15 @@ def _snapshot_with_quotes(store: Store, *, force_quotes: bool = False) -> dict[s
     quote_map = get_quotes(symbols, force=force_quotes)
     store.record_quotes(quote_map)
     live_count = 0
+    fallback_provider_count = 0
     for holding in snapshot["holdings"]:
         holding["theme"] = themes.get(str(holding["symbol"]).upper(), "未分类")
         quote = quote_map.get(holding["symbol"], {})
         holding["live_quote"] = quote
         if quote.get("status") == "live" and isinstance(quote.get("price"), (int, float)):
             live_count += 1
+            if quote.get("fallback_from"):
+                fallback_provider_count += 1
             holding["live_price"] = quote["price"]
             holding["live_market_value"] = round(float(quote["price"]) * float(holding["quantity"]), 4)
             holding["display_price_source"] = "live_quote"
@@ -451,7 +503,8 @@ def _snapshot_with_quotes(store: Store, *, force_quotes: bool = False) -> dict[s
         "total": len(symbols),
         "live": live_count,
         "fallback": len(symbols) - live_count,
-        "status": "ok" if live_count == len(symbols) else "partial" if live_count else "unavailable",
+        "fallback_provider_count": fallback_provider_count,
+        "status": "ok" if live_count == len(symbols) and fallback_provider_count == 0 else "partial" if live_count else "unavailable",
     }
     return snapshot
 
@@ -470,6 +523,46 @@ def _snapshot_meta(snapshot: dict[str, Any] | None) -> dict[str, Any]:
         "age_seconds": age,
         "holding_count": len(snapshot.get("holdings", [])),
         "quote_summary": snapshot.get("live_quote_summary"),
+    }
+
+
+def _model_analysis_context(
+    snapshot: dict[str, Any],
+    profiles: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build a model-safe portfolio view without account values, costs, or quantities."""
+    profile_symbols = {str(item.get("symbol") or "").upper() for item in profiles}
+    holdings = []
+    live_quote_count = 0
+    for holding in snapshot.get("holdings", []):
+        if float(holding.get("quantity") or 0) <= 0:
+            continue
+        symbol = str(holding.get("symbol") or "").upper()
+        quote = holding.get("live_quote") or {}
+        if quote.get("status") == "live" and isinstance(quote.get("price"), (int, float)):
+            live_quote_count += 1
+        holdings.append(
+            {
+                "symbol": symbol,
+                "name": str(holding.get("name") or symbol),
+                "market": str(holding.get("market") or ""),
+                "security_type": str(holding.get("security_type") or "stock"),
+                "theme": str(holding.get("theme") or "未分类"),
+                "quote_status": str(quote.get("status") or "unavailable"),
+                "price": quote.get("price"),
+                "quote_provider": str(quote.get("provider") or "unknown"),
+                "quote_observed_at": quote.get("observed_at") or quote.get("fetched_at"),
+                "market_session": str(quote.get("market_session") or "unknown"),
+                "price_session": str(quote.get("price_session") or "unknown"),
+                "change_percent": quote.get("change_percent"),
+                "has_user_rule": symbol in profile_symbols,
+            }
+        )
+    return {
+        "analysis_mode": "full",
+        "holding_count": len(holdings),
+        "live_quote_count": live_quote_count,
+        "holdings": holdings,
     }
 
 
@@ -568,7 +661,12 @@ def _run_due_market_analysis(store: Store, *, now: datetime | None = None) -> di
     if not status["due"]:
         return {"status": "not_due", "schedule": status}
     result = refresh_decisions(store, notify=True, enrich=True, source="market_analysis")
-    return {"status": "completed", "decision_count": len(result.decisions), "schedule": status}
+    return {
+        "status": "completed",
+        "decision_count": len(result.decisions),
+        "model_status": result.model_status,
+        "schedule": status,
+    }
 
 
 def _safe_database_label(url: str) -> str:

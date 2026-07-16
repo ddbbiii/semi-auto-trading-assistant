@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import {
-    AlertTriangle, ArrowDownRight, Check, ChevronDown, Clock3, Database, RefreshCw, ShieldAlert, TimerReset, X,
+    Activity, AlertTriangle, ArrowDownRight, Check, ChevronDown, Clock3, Database, Lightbulb,
+    RefreshCw, Scale, ShieldAlert, Sparkles, TimerReset, X,
 } from "lucide-react";
-import { apiFetch, DashboardPayload, Decision, DecisionRefreshResponse, formatMoney, Holding, relativeTime } from "@/lib/decision-api";
+import { AnalysisReport, AnalysisTone, apiFetch, DashboardPayload, Decision, DecisionRefreshResponse, formatMoney, Holding, LlmStatus, relativeTime } from "@/lib/decision-api";
 
 const actionCopy = {
     verify: "需要核验", hold: "继续持有", reduce: "考虑减仓", exit: "复核退出", add: "分批增加", watch: "继续观察",
@@ -37,6 +38,7 @@ export default function DecisionWorkbench() {
     const [refreshing, setRefreshing] = useState(false);
     const [error, setError] = useState("");
     const [receipt, setReceipt] = useState<DecisionRefreshResponse["summary"] | null>(null);
+    const [testingModel, setTestingModel] = useState(false);
 
     const load = async (background = false) => {
         if (background) setRefreshing(true);
@@ -63,6 +65,19 @@ export default function DecisionWorkbench() {
         } catch (cause) { setError(cause instanceof Error ? cause.message : "重新计算失败"); setRefreshing(false); }
     };
 
+    const testModel = async () => {
+        setTestingModel(true);
+        setError("");
+        try {
+            const llm = await apiFetch<LlmStatus>("/api/v1/system/test-llm", { method: "POST" });
+            setData((current) => current ? { ...current, llm } : current);
+        } catch (cause) {
+            setError(cause instanceof Error ? cause.message : "模型 API 测试失败");
+        } finally {
+            setTestingModel(false);
+        }
+    };
+
     if (loading && !data) return <PageLoading />;
     if (!data) return <EmptyError message={error} onRetry={() => void load()} />;
 
@@ -80,8 +95,9 @@ export default function DecisionWorkbench() {
             <div className="status-total"><span>组合估值</span><strong>{formatMoney(data.summary.estimated_total_cny)}</strong><small>按参考汇率估算</small></div>
         </section>
 
+        <ModelApiAlert status={data.llm} testing={testingModel} onTest={() => void testModel()} />
         {error ? <p className="error-banner">{error}</p> : null}
-        {receipt ? <CalculationReceipt receipt={receipt} /> : null}
+        {receipt ? <CalculationReceipt receipt={receipt} modelStatus={data.llm} retrying={refreshing} onRetry={() => void refreshDecisions()} /> : null}
 
         <section className="decision-section">
             <div className="section-heading"><div><span className="section-index">01</span><div><h2>决策收件箱</h2><p>最多保留三件当前真正需要处理的事</p></div></div><span className="count-chip">{data.decisions.length}</span></div>
@@ -90,22 +106,83 @@ export default function DecisionWorkbench() {
             </div>
         </section>
 
+        <AnalysisReportPanel report={data.analysis_report} refreshing={refreshing} onRefresh={() => void refreshDecisions()} />
+
         <details className="stable-section">
-            <summary><div><span className="section-index">02</span><div><h2>稳定持仓</h2><p>{data.stable_holdings.length} 个持仓暂时无需动作</p></div></div><ChevronDown /></summary>
+            <summary><div><span className="section-index">03</span><div><h2>稳定持仓</h2><p>{data.stable_holdings.length} 个持仓暂时无需动作</p></div></div><ChevronDown /></summary>
             <div className="stable-grid">{data.stable_holdings.map((holding) => <HoldingMini key={holding.symbol} holding={holding} />)}</div>
         </details>
     </div>;
 }
 
-function CalculationReceipt({ receipt }: { receipt: DecisionRefreshResponse["summary"] }) {
-    const modelLabel = {
-        used: "模型已解释触发事项",
-        skipped_no_decisions: "无触发事项，模型未调用",
-        skipped_not_configured: "模型未配置，保留规则结果",
-        skipped_lightweight: "轻量检查未调用模型",
-        failed_fallback: "模型调用失败，已保留规则结果",
-    }[receipt.model_status];
-    return <div className="calculation-receipt"><Check /><span><strong>计算完成</strong><small>检查 {receipt.checked_holdings} 个持仓 · {receipt.generic_rules} 条通用规则 · {receipt.active_user_rules} 组用户规则 · 触发 {receipt.decision_count} 项</small></span><em>{modelLabel} · {new Date(receipt.completed_at).toLocaleTimeString("zh-CN", { hour12: false })}</em></div>;
+function AnalysisReportPanel({ report, refreshing, onRefresh }: { report?: AnalysisReport | null; refreshing: boolean; onRefresh: () => void }) {
+    if (!report) {
+        return <section className="analysis-report-section empty">
+            <div className="section-heading"><div><span className="section-index">02</span><div><h2>为什么得出这个结论</h2><p>完整分析会在这里保留事实、判断链和反方条件</p></div></div></div>
+            <div className="analysis-empty"><Lightbulb /><strong>还没有可展示的完整分析</strong><span>执行一次“重新计算”后，报告会持久保留在这里。</span><button type="button" className="primary-button" disabled={refreshing} onClick={onRefresh}>{refreshing ? "分析中…" : "生成完整分析"}</button></div>
+        </section>;
+    }
+    const source = report.source === "manual_decision" ? "手动全量分析" : report.source === "scheduled_decision" ? "两小时自动分析" : "完整分析";
+    const modelUsed = report.model_status === "used";
+    return <section className="analysis-report-section">
+        <div className="section-heading analysis-report-heading"><div><span className="section-index">02</span><div><h2>为什么得出这个结论</h2><p>把事实、推断和限制分开，便于复核而不是只看一句建议</p></div></div><span className={`analysis-source ${modelUsed ? "model" : "local"}`}>{modelUsed ? <Sparkles /> : <Activity />}{source} · {relativeTime(report.generated_at)}</span></div>
+        <div className="analysis-conclusion">
+            <span>本次结论</span>
+            <h3>{report.headline}</h3>
+            <p>{report.conclusion}</p>
+        </div>
+        <div className="analysis-columns">
+            <AnalysisBlock icon={<Activity />} eyebrow="FACTS" title="关键事实" items={report.market_facts.map((item) => ({ label: item.label, detail: item.detail, tone: item.tone }))} />
+            <AnalysisBlock icon={<Lightbulb />} eyebrow="REASONING" title="判断链" items={report.reasoning.map((item) => ({ label: item.title, detail: item.detail, tone: item.tone }))} />
+        </div>
+        {report.position_notes.length ? <div className="position-analysis">
+            <div className="analysis-subheading"><div><Scale /><span><strong>逐标的处理</strong><small>动作来自本地规则，模型只补充原因</small></span></div><em>{report.position_notes.length} 个标的</em></div>
+            <div className="position-analysis-list">{report.position_notes.map((item) => <article className={`position-analysis-row tone-${item.tone}`} key={item.symbol}><div className="position-analysis-id"><code>{item.symbol}</code><span>{item.name}</span></div><strong>{item.stance}</strong><p>{item.reason}</p></article>)}</div>
+        </div> : null}
+        {(report.counterpoints.length || report.limitations.length) ? <div className="analysis-caveats">
+            {report.counterpoints.length ? <div className="counterpoint"><ShieldAlert /><span><strong>最强反方</strong>{report.counterpoints.map((item) => <p key={item}>{item}</p>)}</span></div> : null}
+            {report.limitations.length ? <div className="limitation"><AlertTriangle /><span><strong>当前限制</strong>{report.limitations.map((item) => <p key={item}>{item}</p>)}</span></div> : null}
+        </div> : null}
+    </section>;
+}
+
+function AnalysisBlock({ icon, eyebrow, title, items }: { icon: React.ReactNode; eyebrow: string; title: string; items: Array<{ label: string; detail: string; tone: AnalysisTone }> }) {
+    return <section className="analysis-block"><header><span>{icon}</span><div><small>{eyebrow}</small><strong>{title}</strong></div></header><div className="analysis-point-list">{items.map((item, index) => <article className={`analysis-point tone-${item.tone}`} key={`${item.label}-${index}`}><mark>{item.label}</mark><p>{item.detail}</p></article>)}</div></section>;
+}
+
+function CalculationReceipt({ receipt, modelStatus, retrying, onRetry }: { receipt: DecisionRefreshResponse["summary"]; modelStatus?: LlmStatus; retrying: boolean; onRetry: () => void }) {
+    const marketState = receipt.market_data_status === "success" ? "success" : receipt.market_data_status === "partial" ? "partial" : "failed";
+    const modelFailed = modelStatus?.connectivity === "error" || modelStatus?.test === "failed" || receipt.model_status === "failed_fallback" || receipt.model_status === "skipped_not_configured";
+    const modelState = receipt.model_status === "used" ? "success" : modelFailed ? "failed" : "not_called";
+    const overallWarning = marketState !== "success" || modelState === "failed";
+    const modelDetail = receipt.model_status === "used"
+        ? receipt.model_summary || "模型 API 已完成本次完整分析。"
+        : modelFailed
+            ? modelStatus?.message || "模型 API 调用失败，已保留确定性规则结果。"
+            : receipt.model_status === "skipped_lightweight"
+                ? "本次属于 15 分钟轻量监控，按设置不调用模型 API。"
+                : "当前回执来自旧版跳过逻辑，请重新执行完整分析。";
+    return <div className={`calculation-receipt ${overallWarning ? "warning" : ""}`} role={overallWarning ? "alert" : undefined}>
+        <div className="calculation-receipt-heading"><Check /><span><strong>计算完成</strong><small>检查 {receipt.checked_holdings} 个持仓 · {receipt.generic_rules} 条通用规则 · {receipt.active_user_rules} 组用户规则 · 触发 {receipt.decision_count} 项</small></span><em>{new Date(receipt.completed_at).toLocaleTimeString("zh-CN", { hour12: false })}</em></div>
+        <div className="calculation-channel-grid">
+            <section className="calculation-channel-group"><strong>后端与行情 API</strong><ChannelLine label="后端重算 API" state="success" detail="已完成规则检查" /><ChannelLine label="行情 API" state={marketState} detail={`${receipt.market_data_live}/${receipt.market_data_total} 条行情可用${receipt.market_data_fallback ? `，${receipt.market_data_fallback} 条使用备用源` : ""}`} /></section>
+            <section className="calculation-channel-group"><strong>大模型 API</strong><ChannelLine label={modelState === "not_called" ? "本次未调用" : modelState === "success" ? "调用成功" : "调用失败"} state={modelState} detail={modelDetail} />{modelState !== "success" ? <button className="calculation-channel-action" type="button" disabled={retrying} onClick={onRetry}>{retrying ? "完整分析中…" : "重新执行完整分析"}</button> : null}</section>
+        </div>
+    </div>;
+}
+
+function ChannelLine({ label, state, detail }: { label: string; state: "success" | "partial" | "not_called" | "failed"; detail: string }) {
+    const Icon = state === "success" ? Check : state === "failed" ? AlertTriangle : Clock3;
+    const stateLabel = state === "success" ? "成功" : state === "partial" ? "部分可用" : state === "failed" ? "失败" : "未调用";
+    return <div className={`channel-line ${state}`}><Icon /><span><strong>{label}</strong><small>{stateLabel} · {detail}</small></span></div>;
+}
+
+function ModelApiAlert({ status, testing, onTest }: { status?: LlmStatus; testing: boolean; onTest: () => void }) {
+    if (!status) return null;
+    const failed = status.status === "not_configured" || status.connectivity === "error";
+    if (!failed) return null;
+    const title = status.status === "not_configured" ? "大模型 API 尚未配置" : "大模型 API 最近调用失败";
+    return <div className="system-alert" role="alert"><AlertTriangle /><div><strong>{title}</strong><span>{status.message} 当前只保留确定性规则结果，不会假装模型已经提供解释。</span></div><button type="button" disabled={testing} onClick={onTest}>{testing ? "测试中…" : "测试连接"}</button><a href="/settings#model-api">查看设置</a></div>;
 }
 
 function DecisionCard({ decision, rank, onChanged }: { decision: Decision; rank: number; onChanged: () => void }) {

@@ -72,6 +72,16 @@ class SyncRunRecord(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class AnalysisReportRecord(Base):
+    __tablename__ = "analysis_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(80), index=True)
+    model_status: Mapped[str] = mapped_column(String(32), index=True)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+
+
 class QuoteRecord(Base):
     __tablename__ = "quotes"
 
@@ -283,6 +293,26 @@ class Store:
                 .order_by(DecisionRecord.generated_at.desc())
             ).all()
             return [json.loads(record.payload_json) | {"status": record.status} for record in records]
+
+    def save_analysis_report(self, payload: dict[str, Any]) -> int:
+        with self.session() as session:
+            record = AnalysisReportRecord(
+                source=str(payload.get("source") or "manual_decision"),
+                model_status=str(payload.get("model_status") or "unknown"),
+                generated_at=_parse_datetime(payload["generated_at"]),
+                payload_json=json.dumps(payload, ensure_ascii=False),
+            )
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            return record.id
+
+    def latest_analysis_report(self) -> dict[str, Any] | None:
+        with self.session() as session:
+            record = session.scalars(
+                select(AnalysisReportRecord).order_by(AnalysisReportRecord.generated_at.desc()).limit(1)
+            ).first()
+            return json.loads(record.payload_json) if record else None
 
     def save_feedback(
         self,

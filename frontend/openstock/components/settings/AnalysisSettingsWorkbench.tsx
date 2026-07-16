@@ -1,6 +1,7 @@
 "use client";
 
 import {
+    AlertTriangle,
     Activity,
     Check,
     Clock3,
@@ -12,7 +13,7 @@ import {
     SunMedium,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { AnalysisSettings, apiFetch, relativeTime } from "@/lib/decision-api";
+import { AnalysisSettings, apiFetch, LlmStatus, relativeTime, SystemStatus } from "@/lib/decision-api";
 
 type SessionKey = "analyze_us_premarket" | "analyze_regular_session" | "analyze_us_afterhours";
 
@@ -53,6 +54,9 @@ export default function AnalysisSettingsWorkbench() {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
     const [saved, setSaved] = useState(false);
+    const [model, setModel] = useState<LlmStatus | null>(null);
+    const [modelTesting, setModelTesting] = useState(false);
+    const [modelError, setModelError] = useState("");
 
     useEffect(() => {
         void apiFetch<AnalysisSettings>("/api/v1/settings/analysis")
@@ -62,7 +66,22 @@ export default function AnalysisSettingsWorkbench() {
                 setHours(String(payload.interval_minutes / 60));
             })
             .catch((cause) => setError(cause instanceof Error ? cause.message : "分析设置加载失败"));
+        void apiFetch<SystemStatus>("/api/v1/system/status")
+            .then((payload) => setModel(payload.llm ?? null))
+            .catch((cause) => setModelError(cause instanceof Error ? cause.message : "模型状态加载失败"));
     }, []);
+
+    async function testModel() {
+        setModelTesting(true);
+        setModelError("");
+        try {
+            setModel(await apiFetch<LlmStatus>("/api/v1/system/test-llm", { method: "POST" }));
+        } catch (cause) {
+            setModelError(cause instanceof Error ? cause.message : "模型 API 测试失败");
+        } finally {
+            setModelTesting(false);
+        }
+    }
 
     async function save() {
         if (!draft) return;
@@ -184,8 +203,22 @@ export default function AnalysisSettingsWorkbench() {
                     <div className="schedule-note"><ShieldCheck /><p><strong>两层刷新互不冲突</strong><span>15 分钟风险监控只运行确定性规则；这里控制的是会调用模型生成解释的完整分析。</span></p></div>
                 </aside>
             </div>
+            <ModelApiPanel model={model} testing={modelTesting} error={modelError} onTest={() => void testModel()} />
         </div>
     );
+}
+
+function ModelApiPanel({ model, testing, error, onTest }: { model: LlmStatus | null; testing: boolean; error: string; onTest: () => void }) {
+    const state = !model || model.status === "not_configured" ? "bad" : model.connectivity === "error" ? "bad" : model.connectivity === "ok" ? "good" : "unknown";
+    const label = !model ? "读取中" : model.status === "not_configured" ? "未配置" : model.connectivity === "error" ? "调用失败" : model.connectivity === "ok" ? "连接正常" : "尚未测试";
+    return <section id="model-api" className="settings-panel model-api-panel">
+        <div className="settings-panel-heading"><div className="settings-heading-icon"><AlertTriangle /></div><div><h2>大模型 API</h2><p>模型只负责解释确定性规则，不改变动作、仓位或风险等级。</p></div></div>
+        <div className={`model-api-status ${state}`}>
+            <span>当前连接状态</span><strong>{label}</strong>
+            <small>{error || model?.message || "正在读取模型 API 状态…"}{model?.model ? ` · 模型：${model.model}` : ""}</small>
+            <button type="button" disabled={testing} onClick={onTest}>{testing ? "测试中…" : "测试连接"}</button>
+        </div>
+    </section>;
 }
 
 function RuntimeItem({ icon: Icon, label, value, tone = "" }: { icon: typeof Activity; label: string; value: string; tone?: string }) {

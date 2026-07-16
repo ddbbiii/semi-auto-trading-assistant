@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from trading_assistant.api import create_app
+from trading_assistant.api import create_app, refresh_decisions
 from trading_assistant.db import Store
 
 
@@ -136,7 +136,18 @@ def test_risk_settings_api_returns_transparent_refresh_summary() -> None:
         store.create_schema()
         store.save_snapshot(snapshot(10))
         app = create_app(store, schedule=False)
-        with patch("trading_assistant.api.get_quotes", side_effect=quotes):
+        with patch("trading_assistant.api.get_quotes", side_effect=quotes), patch(
+            "trading_assistant.api.analyze_refresh_with_report",
+            return_value=([], "used", "模型已完成全量复核，本次没有触发动作。", {
+                "headline": "当前没有触发动作",
+                "conclusion": "模型已完成全量复核，本次没有触发动作。",
+                "market_facts": [],
+                "reasoning": [],
+                "position_notes": [],
+                "counterpoints": [],
+                "limitations": [],
+            }),
+        ) as analyze:
             with TestClient(app) as client:
                 saved = client.put(
                     "/api/v1/settings/risk",
@@ -149,13 +160,55 @@ def test_risk_settings_api_returns_transparent_refresh_summary() -> None:
                     },
                 )
                 refreshed = client.post("/api/v1/decisions/refresh")
+                dashboard = client.get("/api/v1/dashboard")
 
     assert saved.status_code == 200
     assert saved.json()["active_profile_count"] == 1
     assert refreshed.status_code == 200
     assert refreshed.json()["summary"]["checked_holdings"] == 1
     assert refreshed.json()["summary"]["active_user_rules"] == 1
-    assert refreshed.json()["summary"]["model_status"] == "skipped_no_decisions"
+    assert refreshed.json()["summary"]["model_status"] == "used"
+    assert refreshed.json()["summary"]["model_summary"] == "模型已完成全量复核，本次没有触发动作。"
+    assert refreshed.json()["summary"]["backend_status"] == "success"
+    assert refreshed.json()["summary"]["market_data_status"] == "success"
+    assert refreshed.json()["summary"]["market_data_live"] == 1
+    assert refreshed.json()["summary"]["market_data_total"] == 1
+    assert refreshed.json()["summary"]["market_data_fallback"] == 0
+    assert refreshed.json()["analysis_report"]["headline"] == "当前没有触发动作"
+    assert dashboard.status_code == 200
+    assert dashboard.json()["analysis_report"]["headline"] == "当前没有触发动作"
+    assert dashboard.json()["analysis_report"]["source"] == "manual_decision"
+    analyze.assert_called_once()
+
+
+def test_lightweight_refresh_never_calls_model() -> None:
+    def quotes(symbols: list[str], **_kwargs: object) -> dict[str, dict[str, object]]:
+        now = datetime.now(timezone.utc).isoformat()
+        return {
+            symbol: {
+                "symbol": symbol,
+                "status": "live",
+                "provider": "test",
+                "price": 100.0,
+                "observed_at": now,
+            }
+            for symbol in symbols
+        }
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = Store(f"sqlite:///{(Path(temp_dir) / 'risk.sqlite3').as_posix()}")
+        store.create_schema()
+        store.save_snapshot(snapshot(10))
+        with patch("trading_assistant.api.get_quotes", side_effect=quotes), patch(
+            "trading_assistant.api.analyze_refresh_with_report"
+        ) as analyze:
+            result = refresh_decisions(store, enrich=False, source="risk_monitor")
+        store.close()
+
+    assert result.model_status == "skipped_lightweight"
+    assert result.model_summary is None
+    assert result.analysis_report is None
+    analyze.assert_not_called()
 
 
 def test_investment_policy_api_exposes_canonical_chinese_rules() -> None:

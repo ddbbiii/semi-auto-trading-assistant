@@ -8,7 +8,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from trading_assistant.analysis_schedule import enabled_sessions_at, market_session_for_symbol, market_sessions_at, schedule_status
-from trading_assistant.api import create_app
+from trading_assistant.api import _run_due_market_analysis, create_app
 from trading_assistant.db import Store
 
 
@@ -61,9 +61,9 @@ def test_market_sessions_cover_china_and_us_extended_hours() -> None:
 
 
 def test_market_session_for_us_symbol_distinguishes_extended_hours() -> None:
-    assert market_session_for_symbol("AAPL", datetime(2026, 7, 13, 13, 8, tzinfo=timezone.utc)) == "premarket"
-    assert market_session_for_symbol("AAPL", datetime(2026, 7, 13, 14, 0, tzinfo=timezone.utc)) == "regular"
-    assert market_session_for_symbol("AAPL", datetime(2026, 7, 13, 21, 0, tzinfo=timezone.utc)) == "afterhours"
+    assert market_session_for_symbol("SOXX", datetime(2026, 7, 13, 13, 8, tzinfo=timezone.utc)) == "premarket"
+    assert market_session_for_symbol("SOXX", datetime(2026, 7, 13, 14, 0, tzinfo=timezone.utc)) == "regular"
+    assert market_session_for_symbol("SOXX", datetime(2026, 7, 13, 21, 0, tzinfo=timezone.utc)) == "afterhours"
 
 
 def test_session_toggles_apply_to_expected_markets() -> None:
@@ -138,3 +138,63 @@ def test_analysis_settings_api_validates_and_persists_updates() -> None:
     assert response.json()["analyze_us_afterhours"] is True
     assert invalid.status_code == 422
     assert persisted.json()["interval_minutes"] == 180
+
+
+def test_due_market_analysis_calls_model_even_without_decisions() -> None:
+    now = datetime(2026, 7, 13, 14, 0, tzinfo=timezone.utc)
+
+    def quotes(symbols: list[str], **_kwargs: object) -> dict[str, dict[str, object]]:
+        return {
+            symbol: {
+                "symbol": symbol,
+                "status": "live",
+                "provider": "test",
+                "price": 100.0,
+                "change_percent": 0.0,
+                "observed_at": now.isoformat(),
+                "market_session": "regular",
+                "price_session": "regular",
+            }
+            for symbol in symbols
+        }
+
+    snapshot = {
+        "as_of": now.isoformat(),
+        "source": "test_confirmed",
+        "account": {},
+        "holdings": [
+            {
+                "symbol": "TEST",
+                "name": "测试标的",
+                "market": "US",
+                "security_type": "stock",
+                "quantity": 1,
+                "currency": "USD",
+                "market_value": 100,
+                "price": 100,
+            }
+        ],
+    }
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = Store(f"sqlite:///{(Path(temp_dir) / 'schedule.sqlite3').as_posix()}")
+        store.create_schema()
+        store.save_snapshot(snapshot)
+        with patch("trading_assistant.api.get_quotes", side_effect=quotes), patch(
+            "trading_assistant.api.analyze_refresh_with_report",
+            return_value=([], "used", "模型已完成两小时全量复核。", {
+                "headline": "当前没有触发动作",
+                "conclusion": "模型已完成两小时全量复核。",
+                "market_facts": [],
+                "reasoning": [],
+                "position_notes": [],
+                "counterpoints": [],
+                "limitations": [],
+            }),
+        ) as analyze:
+            result = _run_due_market_analysis(store, now=now)
+        store.close()
+
+    assert result["status"] == "completed"
+    assert result["model_status"] == "used"
+    analyze.assert_called_once()

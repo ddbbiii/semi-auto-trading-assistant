@@ -2,9 +2,27 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
+from threading import Lock
 from typing import Any
 
 import httpx
+
+
+_STATUS_LOCK = Lock()
+_LAST_ATTEMPT_AT: datetime | None = None
+_LAST_SUCCESS_AT: datetime | None = None
+_LAST_FAILURE_AT: datetime | None = None
+_LAST_ERROR = ""
+_LAST_HTTP_STATUS: int | None = None
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
 
 
 def status() -> dict[str, Any]:
@@ -12,12 +30,55 @@ def status() -> dict[str, Any]:
         os.getenv(name, "").strip()
         for name in ("TRADING_ASSISTANT_LLM_BASE_URL", "TRADING_ASSISTANT_LLM_API_KEY", "TRADING_ASSISTANT_LLM_MODEL")
     )
+    with _STATUS_LOCK:
+        last_attempt_at = _LAST_ATTEMPT_AT
+        last_success_at = _LAST_SUCCESS_AT
+        last_failure_at = _LAST_FAILURE_AT
+        last_error = _LAST_ERROR
+        last_http_status = _LAST_HTTP_STATUS
+
+    if not configured:
+        connection_status = "unknown"
+        status_label = "not_configured"
+        message = "大模型 API 尚未配置。"
+    elif last_failure_at and (not last_success_at or last_failure_at > last_success_at):
+        connection_status = "error"
+        status_label = "configured"
+        message = last_error or "大模型 API 最近一次调用失败。"
+    elif last_success_at:
+        connection_status = "ok"
+        status_label = "configured"
+        message = "大模型 API 最近一次调用成功。"
+    else:
+        connection_status = "unknown"
+        status_label = "configured"
+        message = "大模型 API 已配置，但尚未进行实际调用测试。"
+
     return {
-        "status": "configured" if configured else "not_configured",
+        "status": status_label,
+        "configured": configured,
+        "connectivity": connection_status,
+        "message": message,
         "model": os.getenv("TRADING_ASSISTANT_LLM_MODEL", ""),
         "api_style": os.getenv("TRADING_ASSISTANT_LLM_API_STYLE", "chat_completions"),
         "vision_import_enabled": os.getenv("TRADING_ASSISTANT_VISION_IMPORT_ENABLED", "0") == "1",
+        "last_attempt_at": _iso(last_attempt_at),
+        "last_success_at": _iso(last_success_at),
+        "last_failure_at": _iso(last_failure_at),
+        "last_http_status": last_http_status,
     }
+
+
+def test_connection() -> dict[str, Any]:
+    """Perform a harmless JSON request and return status without exposing the response."""
+    if not status()["configured"]:
+        return status() | {"test": "not_configured"}
+    try:
+        _request_json('只返回严格 JSON：{"ok":true}。不要添加其他内容。')
+    except Exception:
+        result = status()
+        return result | {"test": "failed"}
+    return status() | {"test": "passed"}
 
 
 def enrich_decisions(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -27,8 +88,28 @@ def enrich_decisions(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def enrich_decisions_with_status(decisions: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
     if not decisions:
         return decisions, "skipped_no_decisions"
+    enriched, model_status, _ = analyze_refresh_with_status(decisions, {"holdings": []})
+    return enriched, model_status
+
+
+def analyze_refresh_with_status(
+    decisions: list[dict[str, Any]],
+    portfolio_context: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str, str | None]:
+    enriched, model_status, summary, _ = analyze_refresh_with_report(decisions, portfolio_context)
+    return enriched, model_status, summary
+
+
+def analyze_refresh_with_report(
+    decisions: list[dict[str, Any]],
+    portfolio_context: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str, str | None, dict[str, Any]]:
+    """Run the model for a full refresh, even when deterministic rules found no actions."""
     if status()["status"] != "configured":
-        return decisions, "skipped_not_configured"
+        summary = "大模型 API 尚未配置，本次仅完成本地规则复核。"
+        return decisions, "skipped_not_configured", None, _fallback_analysis_report(
+            decisions, portfolio_context, summary
+        )
     sanitized = [
         {
             "id": item["id"],
@@ -54,23 +135,201 @@ def enrich_decisions_with_status(decisions: list[dict[str, Any]]) -> tuple[list[
         for item in decisions
     ]
     prompt = (
-        "你是投资决策解释器。不得改变动作、仓位、数量、价格、优先级或有效期。"
-        "只为每条输入生成简短 title 和 summary。区分事实和推断，不使用账户总资产。"
+        "你是投资组合复核解释器。本地确定性规则已经完成，模型不得增加、删除或改变任何交易动作，"
+        "也不得改变仓位、数量、价格、优先级或有效期。"
+        "你需要复核本次脱敏的持仓与行情覆盖情况，并生成结构化的组合分析报告。区分事实、推断和限制，"
+        "不使用账户总资产，不虚构新闻、公告、估值、价格或数据源。"
+        "如果存在决策，只为每条输入生成简短 title 和 summary。"
         "trigger、invalid_if、current_limit、policy_response、event_classification 和证据等级均由确定性规则锁定，不得改写。"
         "必须使用普通投资者能理解的简体中文，不得输出 quote_stale 等内部英文状态码。"
         "首次提及标的时使用‘证券名称（代码）’，不要只写证券代码；后续可简称证券名称。"
-        "返回 JSON 对象：{\"items\":[{\"id\":...,\"title\":...,\"summary\":...}]}。\n"
-        + json.dumps(sanitized, ensure_ascii=False)
+        "当 decisions 为空时，也必须完成复核并明确说明本次未触发动作，不得虚构建议。"
+        "报告中的 tone 只能是 positive、neutral、warning、risk；逐标的 stance 仅用于解释，最终会由本地规则覆盖。"
+        "返回 JSON 对象：{\"analysis_summary\":\"...\",\"analysis_report\":{"
+        "\"headline\":\"一句话结论\",\"conclusion\":\"两到四句完整判断\","
+        "\"market_facts\":[{\"label\":\"事实标签\",\"detail\":\"可核验事实\",\"tone\":\"neutral\"}],"
+        "\"reasoning\":[{\"title\":\"判断标题\",\"detail\":\"从事实到结论的推理链\",\"tone\":\"warning\"}],"
+        "\"position_notes\":[{\"symbol\":\"代码\",\"reason\":\"该标的当前为何这样处理\",\"tone\":\"neutral\"}],"
+        "\"counterpoints\":[\"最强反方或可能推翻结论的条件\"],"
+        "\"limitations\":[\"当前数据限制\"]},"
+        "\"items\":[{\"id\":...,\"title\":...,\"summary\":...}]}。\n"
+        + json.dumps(
+            {"portfolio": portfolio_context, "decisions": sanitized},
+            ensure_ascii=False,
+        )
     )
     try:
-        generated = {item["id"]: item for item in _request_json(prompt).get("items", [])}
+        body = _request_json(prompt)
     except Exception:
-        return decisions, "failed_fallback"
+        summary = "大模型 API 调用失败，本次仅展示本地规则复核结果。"
+        return decisions, "failed_fallback", None, _fallback_analysis_report(
+            decisions, portfolio_context, summary
+        )
+    generated = {
+        item["id"]: item
+        for item in body.get("items", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    analysis_summary = str(body.get("analysis_summary") or "").strip()
+    if not analysis_summary:
+        analysis_summary = (
+            "模型已完成本次组合复核，确定性规则未触发需要处理的动作。"
+            if not decisions
+            else "模型已完成本次组合复核和决策解释。"
+        )
     allowed = {"title", "summary"}
+    enriched = [item | {key: value for key, value in generated.get(item["id"], {}).items() if key in allowed} for item in decisions]
     return (
-        [item | {key: value for key, value in generated.get(item["id"], {}).items() if key in allowed} for item in decisions],
+        enriched,
         "used",
+        analysis_summary,
+        _normalize_analysis_report(body.get("analysis_report"), enriched, portfolio_context, analysis_summary),
     )
+
+
+_REPORT_TONES = {"positive", "neutral", "warning", "risk"}
+_ACTION_LABELS = {
+    "verify": "先核验",
+    "hold": "继续持有",
+    "reduce": "复核减仓",
+    "exit": "复核退出",
+    "add": "满足条件后分批增加",
+    "watch": "继续观察",
+}
+_ACTION_TONES = {
+    "verify": "warning",
+    "hold": "positive",
+    "reduce": "risk",
+    "exit": "risk",
+    "add": "positive",
+    "watch": "neutral",
+}
+
+
+def _normalize_analysis_report(
+    value: Any,
+    decisions: list[dict[str, Any]],
+    portfolio_context: dict[str, Any],
+    summary: str,
+) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    holdings = {
+        str(item.get("symbol") or "").upper(): item
+        for item in portfolio_context.get("holdings", [])
+        if str(item.get("symbol") or "").strip()
+    }
+    decision_by_symbol = {str(item.get("symbol") or "").upper(): item for item in decisions}
+
+    position_notes: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for note in raw.get("position_notes", []):
+        if not isinstance(note, dict):
+            continue
+        symbol = str(note.get("symbol") or "").upper()
+        if symbol not in holdings or symbol in seen:
+            continue
+        holding = holdings[symbol]
+        decision = decision_by_symbol.get(symbol)
+        action = str(decision.get("action") or "watch") if decision else "watch"
+        reason = _clean_text(note.get("reason"), 320)
+        if not reason:
+            continue
+        position_notes.append(
+            {
+                "symbol": symbol,
+                "name": _clean_text(holding.get("name") or symbol, 80),
+                "stance": _ACTION_LABELS[action] if decision else "暂无动作",
+                "reason": reason,
+                "tone": _ACTION_TONES[action] if decision else _tone(note.get("tone")),
+            }
+        )
+        seen.add(symbol)
+    for symbol, decision in decision_by_symbol.items():
+        if symbol in seen or symbol not in holdings:
+            continue
+        action = str(decision.get("action") or "verify")
+        position_notes.append(
+            {
+                "symbol": symbol,
+                "name": _clean_text(holdings[symbol].get("name") or symbol, 80),
+                "stance": _ACTION_LABELS.get(action, "先核验"),
+                "reason": _clean_text(decision.get("summary") or decision.get("trigger"), 320),
+                "tone": _ACTION_TONES.get(action, "warning"),
+            }
+        )
+
+    report = {
+        "headline": _clean_text(raw.get("headline"), 100) or ("当前没有触发动作" if not decisions else "本次有事项需要复核"),
+        "conclusion": _clean_text(raw.get("conclusion"), 700) or summary,
+        "market_facts": _normalize_report_items(raw.get("market_facts"), label_key="label", limit=5),
+        "reasoning": _normalize_report_items(raw.get("reasoning"), label_key="title", limit=6),
+        "position_notes": position_notes[:12],
+        "counterpoints": _normalize_text_list(raw.get("counterpoints"), 5),
+        "limitations": _normalize_text_list(raw.get("limitations"), 5),
+    }
+    if not report["market_facts"] or not report["reasoning"]:
+        fallback = _fallback_analysis_report(decisions, portfolio_context, summary)
+        report["market_facts"] = report["market_facts"] or fallback["market_facts"]
+        report["reasoning"] = report["reasoning"] or fallback["reasoning"]
+        report["limitations"] = report["limitations"] or fallback["limitations"]
+    return report
+
+
+def _fallback_analysis_report(
+    decisions: list[dict[str, Any]],
+    portfolio_context: dict[str, Any],
+    summary: str,
+) -> dict[str, Any]:
+    total = int(portfolio_context.get("holding_count") or len(portfolio_context.get("holdings", [])))
+    live = int(portfolio_context.get("live_quote_count") or 0)
+    fallback = max(0, total - live)
+    return {
+        "headline": "当前没有触发动作" if not decisions else f"有 {len(decisions)} 项需要复核",
+        "conclusion": summary,
+        "market_facts": [
+            {
+                "label": "行情覆盖",
+                "detail": f"本次检查 {total} 个持仓，{live} 个取得有效行情，{fallback} 个使用参考或不可用数据。",
+                "tone": "positive" if total > 0 and live == total else "warning",
+            }
+        ],
+        "reasoning": [
+            {
+                "title": "本地规则结果",
+                "detail": "确定性规则未触发需要处理的动作。" if not decisions else f"确定性规则触发 {len(decisions)} 项复核事项，模型无权改变这些动作。",
+                "tone": "neutral" if not decisions else "warning",
+            }
+        ],
+        "position_notes": [],
+        "counterpoints": [],
+        "limitations": ["未完成模型解释时，只能展示行情覆盖和确定性规则结果。"],
+    }
+
+
+def _normalize_report_items(value: Any, *, label_key: str, limit: int) -> list[dict[str, str]]:
+    result = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        label = _clean_text(item.get(label_key), 80)
+        detail = _clean_text(item.get("detail"), 420)
+        if label and detail:
+            result.append({label_key: label, "detail": detail, "tone": _tone(item.get("tone"))})
+    return result[:limit]
+
+
+def _normalize_text_list(value: Any, limit: int) -> list[str]:
+    return [text for item in (value if isinstance(value, list) else []) if (text := _clean_text(item, 360))][:limit]
+
+
+def _tone(value: Any) -> str:
+    tone = str(value or "neutral")
+    return tone if tone in _REPORT_TONES else "neutral"
+
+
+def _clean_text(value: Any, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text[:limit]
 
 
 def classify_security_themes(
@@ -113,8 +372,12 @@ def classify_security_themes(
 
 
 def _request_json(prompt: str) -> dict[str, Any]:
-    if status()["status"] != "configured":
+    if not status()["configured"]:
         raise RuntimeError("模型 API 尚未配置。")
+    attempt_at = _now()
+    with _STATUS_LOCK:
+        global _LAST_ATTEMPT_AT
+        _LAST_ATTEMPT_AT = attempt_at
     base_url = os.environ["TRADING_ASSISTANT_LLM_BASE_URL"].rstrip("/")
     api_style = os.getenv("TRADING_ASSISTANT_LLM_API_STYLE", "chat_completions")
     if api_style == "responses":
@@ -128,16 +391,50 @@ def _request_json(prompt: str) -> dict[str, Any]:
             "response_format": {"type": "json_object"},
             "messages": [{"role": "user", "content": prompt}],
         }
-    response = httpx.post(
-        endpoint,
-        headers={"Authorization": f"Bearer {os.environ['TRADING_ASSISTANT_LLM_API_KEY']}"},
-        json=payload,
-        timeout=45,
-    )
-    response.raise_for_status()
-    body = response.json()
-    content = _extract_responses_text(body) if api_style == "responses" else body["choices"][0]["message"]["content"]
-    return json.loads(_strip_json_fence(content))
+    try:
+        response = httpx.post(
+            endpoint,
+            headers={"Authorization": f"Bearer {os.environ['TRADING_ASSISTANT_LLM_API_KEY']}"},
+            json=payload,
+            timeout=httpx.Timeout(120, connect=15),
+        )
+        response.raise_for_status()
+        body = response.json()
+        content = _extract_responses_text(body) if api_style == "responses" else body["choices"][0]["message"]["content"]
+        parsed = json.loads(_strip_json_fence(content))
+    except httpx.HTTPStatusError as exc:
+        _record_failure(f"大模型 API 返回 HTTP {exc.response.status_code}。", exc.response.status_code)
+        raise
+    except httpx.TimeoutException:
+        _record_failure("大模型 API 请求超时。", None)
+        raise
+    except httpx.RequestError:
+        _record_failure("大模型 API 网络请求失败。", None)
+        raise
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        _record_failure("大模型 API 返回格式无法解析。", None)
+        raise
+    except Exception:
+        _record_failure("大模型 API 调用失败。", None)
+        raise
+    _record_success(response.status_code)
+    return parsed
+
+
+def _record_success(http_status: int | None) -> None:
+    with _STATUS_LOCK:
+        global _LAST_SUCCESS_AT, _LAST_ERROR, _LAST_HTTP_STATUS
+        _LAST_SUCCESS_AT = _now()
+        _LAST_ERROR = ""
+        _LAST_HTTP_STATUS = http_status
+
+
+def _record_failure(message: str, http_status: int | None) -> None:
+    with _STATUS_LOCK:
+        global _LAST_FAILURE_AT, _LAST_ERROR, _LAST_HTTP_STATUS
+        _LAST_FAILURE_AT = _now()
+        _LAST_ERROR = message
+        _LAST_HTTP_STATUS = http_status
 
 
 def _strip_json_fence(content: str) -> str:

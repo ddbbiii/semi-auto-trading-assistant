@@ -81,7 +81,7 @@ export type SnapshotMeta = {
     source?: string;
     age_seconds?: number;
     holding_count?: number;
-    quote_summary?: { total: number; live: number; fallback: number; status: string };
+    quote_summary?: { total: number; live: number; fallback: number; fallback_provider_count?: number; status: string };
 };
 
 export type PortfolioSummary = {
@@ -91,14 +91,52 @@ export type PortfolioSummary = {
     theme_concentration: Array<{ theme: string; value_cny: number; weight_percent: number }>;
 };
 
+export type AnalysisTone = "positive" | "neutral" | "warning" | "risk";
+
+export type AnalysisReport = {
+    generated_at: string;
+    source: string;
+    model_status: "used" | "skipped_not_configured" | "failed_fallback" | string;
+    headline: string;
+    conclusion: string;
+    market_facts: Array<{ label: string; detail: string; tone: AnalysisTone }>;
+    reasoning: Array<{ title: string; detail: string; tone: AnalysisTone }>;
+    position_notes: Array<{ symbol: string; name: string; stance: string; reason: string; tone: AnalysisTone }>;
+    counterpoints: string[];
+    limitations: string[];
+};
+
 export type DashboardPayload = {
     generated_at: string;
     snapshot: SnapshotMeta;
     account: Record<string, number | string>;
     summary: PortfolioSummary;
+    llm?: LlmStatus;
     decisions: Decision[];
+    analysis_report?: AnalysisReport | null;
     stable_holdings: Holding[];
     next_runs: string[];
+};
+
+export type LlmStatus = {
+    status: "configured" | "not_configured";
+    configured: boolean;
+    connectivity: "unknown" | "ok" | "error";
+    message: string;
+    model: string;
+    api_style: string;
+    vision_import_enabled: boolean;
+    last_attempt_at?: string | null;
+    last_success_at?: string | null;
+    last_failure_at?: string | null;
+    last_http_status?: number | null;
+    test?: "passed" | "failed" | "not_configured";
+};
+
+export type SystemStatus = {
+    llm?: LlmStatus;
+    database: { status: string; url: string };
+    futu: { status: string; program_status?: string };
 };
 
 export type HoldingsPayload = {
@@ -182,12 +220,19 @@ export type RiskConfiguration = {
 export type DecisionRefreshResponse = {
     status: "refreshed";
     decisions: Decision[];
+    analysis_report?: AnalysisReport | null;
     summary: {
         checked_holdings: number;
         generic_rules: number;
         active_user_rules: number;
         decision_count: number;
+        backend_status: "success";
+        market_data_status: "success" | "partial" | "failed";
+        market_data_live: number;
+        market_data_total: number;
+        market_data_fallback: number;
         model_status: "used" | "skipped_no_decisions" | "skipped_not_configured" | "skipped_lightweight" | "failed_fallback";
+        model_summary?: string | null;
         completed_at: string;
     };
 };
