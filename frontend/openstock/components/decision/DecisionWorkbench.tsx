@@ -5,7 +5,7 @@ import {
     Activity, AlertTriangle, ArrowDownRight, Check, ChevronDown, Clock3, Database, Lightbulb,
     RefreshCw, Scale, ShieldAlert, Sparkles, TimerReset, X,
 } from "lucide-react";
-import { AnalysisReport, AnalysisTone, apiFetch, DashboardPayload, Decision, DecisionRefreshResponse, formatMoney, Holding, LlmStatus, relativeTime } from "@/lib/decision-api";
+import { AnalysisReport, AnalysisTone, apiFetch, DashboardPayload, DataCoverageItem, Decision, DecisionRefreshResponse, formatMoney, Holding, LlmStatus, relativeTime } from "@/lib/decision-api";
 
 const actionCopy = {
     verify: "需要核验", hold: "继续持有", reduce: "考虑减仓", exit: "复核退出", add: "分批增加", watch: "继续观察",
@@ -131,6 +131,7 @@ function AnalysisReportPanel({ report, refreshing, onRefresh }: { report?: Analy
             <h3>{report.headline}</h3>
             <p>{report.conclusion}</p>
         </div>
+        {(report.data_coverage?.length ?? 0) > 0 ? <AnalysisCoverage items={report.data_coverage ?? []} /> : null}
         <div className="analysis-columns">
             <AnalysisBlock icon={<Activity />} eyebrow="FACTS" title="关键事实" items={report.market_facts.map((item) => ({ label: item.label, detail: item.detail, tone: item.tone }))} />
             <AnalysisBlock icon={<Lightbulb />} eyebrow="REASONING" title="判断链" items={report.reasoning.map((item) => ({ label: item.title, detail: item.detail, tone: item.tone }))} />
@@ -143,6 +144,19 @@ function AnalysisReportPanel({ report, refreshing, onRefresh }: { report?: Analy
             {report.counterpoints.length ? <div className="counterpoint"><ShieldAlert /><span><strong>最强反方</strong>{report.counterpoints.map((item) => <p key={item}>{item}</p>)}</span></div> : null}
             {report.limitations.length ? <div className="limitation"><AlertTriangle /><span><strong>当前限制</strong>{report.limitations.map((item) => <p key={item}>{item}</p>)}</span></div> : null}
         </div> : null}
+    </section>;
+}
+
+function AnalysisCoverage({ items }: { items: DataCoverageItem[] }) {
+    const statusCopy = { available: "已同步", derived: "已计算", partial: "部分覆盖", missing: "缺失" };
+    return <section className="analysis-coverage">
+        <header><div><Database /><span><strong>本次分析用了什么数据</strong><small>后端权威覆盖率，模型不能自行改写</small></span></div><em>原始金额与数量不发送给模型</em></header>
+        <div className="analysis-coverage-grid">{items.map((item) => <article className={`coverage-item ${item.status}`} key={item.key} title={item.detail}>
+            <span>{item.label}</span>
+            <strong>{statusCopy[item.status]}</strong>
+            <small>{item.available}/{item.total}</small>
+            <p>{item.detail}</p>
+        </article>)}</div>
     </section>;
 }
 
@@ -235,7 +249,7 @@ function DecisionCard({ decision, rank, onChanged }: { decision: Decision; rank:
                 <span>投资确定性 <strong>{confidenceCopy[decision.investment_certainty]}</strong></span>
             </div>
             <div className="decision-numbers">
-                <NumberCell label={decision.data_quality.actionable ? "当前仓位" : "估算仓位"} value={decision.current_weight_percent == null ? "—" : `${decision.current_weight_percent}%`} />
+                <NumberCell label="当前权重" value={decision.current_weight_percent == null ? "—" : `${decision.current_weight_percent}%`} />
                 <NumberCell label="目标仓位" value={decision.target_weight_percent == null ? "暂不计算" : `${decision.target_weight_percent}%`} />
                 <NumberCell label="数量变化" value={decision.quantity_delta == null ? "暂不计算" : `${decision.quantity_delta > 0 ? "+" : ""}${decision.quantity_delta}`} />
                 <NumberCell label="有效期" value={new Date(decision.expires_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} />

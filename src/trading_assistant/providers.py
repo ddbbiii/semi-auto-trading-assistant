@@ -158,6 +158,7 @@ def _get_futu_quotes(symbols: list[str]) -> dict[str, dict[str, Any]]:
 def _select_futu_market_price(row: Any, symbol: str, *, now: datetime | None = None) -> dict[str, Any]:
     session = market_session_for_symbol(symbol, now)
     regular_price = _positive(row.get("last_price"))
+    previous_close = _positive(row.get("prev_close_price"))
     session_fields = {
         "premarket": ("pre_price", "pre_change_rate"),
         "afterhours": ("after_price", "after_change_rate"),
@@ -170,9 +171,18 @@ def _select_futu_market_price(row: Any, symbol: str, *, now: datetime | None = N
     if session == "regular" and regular_price is not None:
         price_session = "regular"
 
+    reported_change = _number(row.get(change_field)) if session_price is not None else _number(row.get("change_rate"))
+    change_percent = reported_change
+    change_source = "provider" if reported_change is not None else None
+    if change_percent is None:
+        baseline = regular_price if session == "afterhours" and session_price is not None else previous_close
+        change_percent = _change_percent(price, baseline)
+        change_source = "derived_from_regular_close" if session == "afterhours" and session_price is not None else "derived_from_previous_close"
+
     return {
         "price": price,
-        "change_percent": _number(row.get(change_field)) if session_price is not None else _number(row.get("change_rate")),
+        "change_percent": change_percent,
+        "change_source": change_source,
         "market_session": session,
         "price_session": price_session,
         "regular_price": regular_price,
@@ -180,6 +190,12 @@ def _select_futu_market_price(row: Any, symbol: str, *, now: datetime | None = N
         "after_price": _positive(row.get("after_price")),
         "overnight_price": _positive(row.get("overnight_price")),
     }
+
+
+def _change_percent(price: float | None, baseline: float | None) -> float | None:
+    if price is None or baseline is None or baseline <= 0:
+        return None
+    return round((price / baseline - 1) * 100, 4)
 
 
 def _futu_host() -> str:

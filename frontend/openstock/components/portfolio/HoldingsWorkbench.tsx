@@ -28,7 +28,7 @@ export default function HoldingsWorkbench() {
 function MarketTable({ market, holdings }: { market: "US" | "HK" | "CN"; holdings: Holding[] }) {
     return <section className="market-section"><div className="section-heading compact"><div><span className="market-code">{market}</span><div><h2>{marketNames[market]}</h2><p>{holdings.length} 个持仓</p></div></div></div><div className="holdings-table-wrap"><table className="holdings-table"><thead><tr><th>标的</th><th>数量</th><th>价格 / 来源</th><th>市值</th><th>盈亏</th></tr></thead><tbody>{holdings.map((holding) => {
         const pnl = holding.holding_pnl_percent;
-        return <tr key={holding.symbol}><td><strong>{holding.symbol}</strong><span>{holding.name}</span></td><td>{holding.quantity}</td><td><strong>{holding.live_price ?? holding.screenshot_price ?? holding.price ?? "—"}</strong><span className={holding.display_price_source === "live_quote" ? "live-source" : "fallback-source"}>{quoteSourceLabel(holding)}</span></td><td><strong>{formatMoney(holding.live_market_value ?? holding.market_value, holding.currency)}</strong><span>{holding.currency}</span></td><td className={typeof pnl === "number" ? pnl >= 0 ? "positive" : "negative" : ""}><strong>{typeof pnl === "number" ? `${pnl > 0 ? "+" : ""}${pnl.toFixed(2)}%` : "—"}</strong><span>{typeof holding.holding_pnl === "number" ? formatMoney(holding.holding_pnl, holding.currency) : "暂无"}</span></td></tr>;
+        return <tr key={holding.symbol}><td><strong>{holding.symbol}</strong><span>{holding.name}</span></td><td>{holding.quantity}</td><td><strong>{holding.live_price ?? holding.screenshot_price ?? holding.price ?? "—"}</strong><span className={holding.display_price_source === "live_quote" ? "live-source" : "fallback-source"}>{quoteSourceLabel(holding)}</span></td><td><strong>{formatMoney(holding.live_market_value ?? holding.market_value, holding.currency)}</strong><span>{holding.currency}</span></td><td className={typeof pnl === "number" ? pnl >= 0 ? "positive" : "negative" : ""}><strong>{typeof pnl === "number" ? `${pnl > 0 ? "+" : ""}${pnl.toFixed(2)}%` : "—"}</strong><span>{typeof holding.holding_pnl === "number" ? `${formatMoney(holding.holding_pnl, holding.currency)} · ${pnlSourceLabel(holding)}` : "暂无"}</span></td></tr>;
     })}</tbody></table></div></section>;
 }
 
@@ -38,6 +38,10 @@ function quoteSourceLabel(holding: Holding) {
     if (session === "premarket") return "盘前行情";
     if (session === "afterhours") return "盘后行情";
     return "实时行情";
+}
+
+function pnlSourceLabel(holding: Holding) {
+    return holding.holding_pnl_source === "derived_from_cost" ? "按成本估算" : "券商同步";
 }
 
 function themeName(value: string) { return value.replaceAll("_", " ").replace("ai semiconductor storage", "AI 半导体与存储").replace("ai power building cooling", "AI 电力与冷却").replace("derivative", "衍生品").replace("consumer electronics", "消费电子"); }

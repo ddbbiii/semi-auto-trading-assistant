@@ -70,6 +70,7 @@ export type Holding = {
     average_cost: number;
     holding_pnl?: number;
     holding_pnl_percent?: number;
+    holding_pnl_source?: "broker_reported" | "derived_from_cost";
     theme?: string;
     display_price_source?: string;
     live_quote?: Record<string, unknown>;
@@ -93,6 +94,15 @@ export type PortfolioSummary = {
 
 export type AnalysisTone = "positive" | "neutral" | "warning" | "risk";
 
+export type DataCoverageItem = {
+    key: string;
+    label: string;
+    status: "available" | "derived" | "partial" | "missing";
+    available: number;
+    total: number;
+    detail: string;
+};
+
 export type AnalysisReport = {
     generated_at: string;
     source: string;
@@ -104,6 +114,7 @@ export type AnalysisReport = {
     position_notes: Array<{ symbol: string; name: string; stance: string; reason: string; tone: AnalysisTone }>;
     counterpoints: string[];
     limitations: string[];
+    data_coverage?: DataCoverageItem[];
 };
 
 export type DashboardPayload = {
@@ -231,6 +242,7 @@ export type DecisionRefreshResponse = {
         market_data_live: number;
         market_data_total: number;
         market_data_fallback: number;
+        data_coverage?: DataCoverageItem[];
         model_status: "used" | "skipped_no_decisions" | "skipped_not_configured" | "skipped_lightweight" | "failed_fallback";
         model_summary?: string | null;
         completed_at: string;

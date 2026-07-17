@@ -60,6 +60,7 @@ def test_user_confirmed_stop_builds_non_executable_exit_draft() -> None:
                 "market": "HK",
                 "security_type": "warrant",
                 "quantity": 1000,
+                "available_quantity": 1000,
                 "currency": "HKD",
                 "market_value": 700,
             }
@@ -427,7 +428,7 @@ def test_long_term_stock_price_line_does_not_force_exit() -> None:
 def test_underweight_target_without_buy_condition_only_requests_verification() -> None:
     now = datetime.now(timezone.utc)
     snapshot = {
-        "as_of": now.isoformat(), "source": "synthetic_test", "account": {},
+        "as_of": now.isoformat(), "source": "synthetic_test", "account": {"net_assets_usd": 1000},
         "holdings": [
             {"symbol": "AAPL", "name": "Apple", "market": "US", "security_type": "stock", "quantity": 1, "currency": "USD", "market_value": 100, "price": 100, "average_cost": 90},
             {"symbol": "MSFT", "name": "Microsoft", "market": "US", "security_type": "stock", "quantity": 9, "currency": "USD", "market_value": 900, "price": 100, "average_cost": 100},
@@ -444,7 +445,7 @@ def test_underweight_target_without_buy_condition_only_requests_verification() -
 def test_underweight_target_with_confirmed_condition_can_add() -> None:
     now = datetime.now(timezone.utc)
     snapshot = {
-        "as_of": now.isoformat(), "source": "synthetic_test", "account": {},
+        "as_of": now.isoformat(), "source": "synthetic_test", "account": {"net_assets_usd": 1000},
         "holdings": [
             {"symbol": "AAPL", "name": "Apple", "market": "US", "security_type": "stock", "quantity": 1, "currency": "USD", "market_value": 100, "price": 100, "average_cost": 90},
             {"symbol": "MSFT", "name": "Microsoft", "market": "US", "security_type": "stock", "quantity": 9, "currency": "USD", "market_value": 900, "price": 100, "average_cost": 100},

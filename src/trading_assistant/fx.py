@@ -7,7 +7,7 @@ from typing import Any
 from urllib.request import urlopen
 
 
-_FALLBACK = {"CNY": 1.0, "HKD": 0.92, "USD": 7.2}
+DEFAULT_RATES_TO_CNY = {"CNY": 1.0, "HKD": 0.92, "USD": 7.2}
 _cache: dict[str, Any] | None = None
 _lock = Lock()
 
@@ -36,7 +36,7 @@ def get_rates_to_cny(*, force: bool = False) -> dict[str, Any]:
             }
         except Exception as exc:
             _cache = {
-                "rates_to_cny": _FALLBACK,
+                "rates_to_cny": DEFAULT_RATES_TO_CNY.copy(),
                 "provider": "configured_fallback",
                 "actionable": False,
                 "fetched_at": now,

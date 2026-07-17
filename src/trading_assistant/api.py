@@ -49,6 +49,7 @@ class DecisionRefreshResult:
     market_data_live: int
     market_data_total: int
     market_data_fallback: int
+    data_coverage: list[dict[str, Any]]
     completed_at: datetime
 
     def payload(self) -> dict[str, Any]:
@@ -67,6 +68,7 @@ class DecisionRefreshResult:
                 "market_data_live": self.market_data_live,
                 "market_data_total": self.market_data_total,
                 "market_data_fallback": self.market_data_fallback,
+                "data_coverage": self.data_coverage,
                 "completed_at": self.completed_at.isoformat(),
             },
             "analysis_report": self.analysis_report,
@@ -418,6 +420,8 @@ def refresh_decisions(
             store.reconcile_risk_profiles(snapshot)
             quotes = {item["symbol"]: item.get("live_quote", {}) for item in snapshot["holdings"]}
             profiles = store.risk_profiles(active_only=True)
+            portfolio_summary = _portfolio_summary(snapshot, store)
+            rates_to_cny = portfolio_summary["fx"]["rates_to_cny"]
             decisions = [
                 item.model_dump(mode="json")
                 for item in build_decisions(
@@ -425,6 +429,7 @@ def refresh_decisions(
                     quotes,
                     risk_settings=store.risk_settings(),
                     risk_profiles=profiles,
+                    rates_to_cny=rates_to_cny,
                 )
             ]
             model_status = "skipped_lightweight"
@@ -433,7 +438,7 @@ def refresh_decisions(
             if enrich:
                 decisions, model_status, model_summary, analysis_report = analyze_refresh_with_report(
                     decisions,
-                    _model_analysis_context(snapshot, profiles),
+                    _model_analysis_context(snapshot, profiles, portfolio_summary),
                 )
                 completed_at = datetime.now(timezone.utc)
                 analysis_report = analysis_report | {
@@ -467,6 +472,7 @@ def refresh_decisions(
                 market_data_live=market_data_live,
                 market_data_total=market_data_total,
                 market_data_fallback=market_data_fallback,
+                data_coverage=(analysis_report or {}).get("data_coverage", []),
                 completed_at=completed_at,
             )
         except Exception as exc:
@@ -495,10 +501,13 @@ def _snapshot_with_quotes(store: Store, *, force_quotes: bool = False) -> dict[s
             holding["live_price"] = quote["price"]
             holding["live_market_value"] = round(float(quote["price"]) * float(holding["quantity"]), 4)
             holding["display_price_source"] = "live_quote"
+            _derive_holding_pnl(holding, float(quote["price"]))
         else:
             holding["live_price"] = None
             holding["live_market_value"] = None
             holding["display_price_source"] = "snapshot_fallback"
+            if holding.get("holding_pnl") is not None or holding.get("holding_pnl_percent") is not None:
+                holding["holding_pnl_source"] = "broker_reported"
     snapshot["live_quote_summary"] = {
         "total": len(symbols),
         "live": live_count,
@@ -507,6 +516,21 @@ def _snapshot_with_quotes(store: Store, *, force_quotes: bool = False) -> dict[s
         "status": "ok" if live_count == len(symbols) and fallback_provider_count == 0 else "partial" if live_count else "unavailable",
     }
     return snapshot
+
+
+def _derive_holding_pnl(holding: dict[str, Any], price: float) -> None:
+    """Fill missing P&L fields from confirmed cost data without replacing broker values."""
+    average_cost = _optional_number(holding.get("average_cost"))
+    quantity = _optional_number(holding.get("quantity"))
+    derived = False
+    if average_cost is not None and average_cost > 0:
+        if holding.get("holding_pnl_percent") is None:
+            holding["holding_pnl_percent"] = round((price / average_cost - 1) * 100, 4)
+            derived = True
+        if holding.get("holding_pnl") is None and quantity is not None:
+            holding["holding_pnl"] = round((price - average_cost) * quantity, 4)
+            derived = True
+    holding["holding_pnl_source"] = "derived_from_cost" if derived else "broker_reported"
 
 
 def _snapshot_meta(snapshot: dict[str, Any] | None) -> dict[str, Any]:
@@ -529,18 +553,60 @@ def _snapshot_meta(snapshot: dict[str, Any] | None) -> dict[str, Any]:
 def _model_analysis_context(
     snapshot: dict[str, Any],
     profiles: list[dict[str, Any]],
+    portfolio_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a model-safe portfolio view without account values, costs, or quantities."""
-    profile_symbols = {str(item.get("symbol") or "").upper() for item in profiles}
+    """Build a model-safe view from local derived metrics and authoritative coverage."""
+    portfolio_summary = portfolio_summary or _portfolio_metrics_without_store(snapshot)
+    rates = portfolio_summary.get("fx", {}).get("rates_to_cny") or {"CNY": 1.0, "HKD": 0.92, "USD": 7.2}
+    total_invested_cny = float(portfolio_summary.get("estimated_total_cny") or 0)
+    account_value_cny = _account_value_cny(snapshot.get("account") or {}, rates)
+    profile_by_symbol = {
+        str(item.get("symbol") or "").upper(): item
+        for item in profiles
+        if str(item.get("symbol") or "").strip()
+    }
     holdings = []
     live_quote_count = 0
-    for holding in snapshot.get("holdings", []):
+    active_holdings = [
+        holding
+        for holding in snapshot.get("holdings", [])
+        if float(holding.get("quantity") or 0) > 0
+    ]
+    for holding in active_holdings:
         if float(holding.get("quantity") or 0) <= 0:
             continue
         symbol = str(holding.get("symbol") or "").upper()
         quote = holding.get("live_quote") or {}
+        profile = profile_by_symbol.get(symbol)
         if quote.get("status") == "live" and isinstance(quote.get("price"), (int, float)):
             live_quote_count += 1
+        market_value = _optional_number(holding.get("live_market_value"))
+        if market_value is None:
+            market_value = _optional_number(holding.get("market_value"))
+        rate = float(rates.get(str(holding.get("currency") or ""), 1.0))
+        value_cny = market_value * rate if market_value is not None else None
+        invested_weight = (
+            round(value_cny / total_invested_cny * 100, 2)
+            if value_cny is not None and total_invested_cny > 0
+            else None
+        )
+        account_weight = (
+            round(value_cny / account_value_cny * 100, 2)
+            if value_cny is not None and account_value_cny is not None and account_value_cny > 0
+            else None
+        )
+        reported_return = _optional_number(holding.get("holding_pnl_percent"))
+        average_cost = _optional_number(holding.get("average_cost"))
+        live_price = _optional_number(quote.get("price"))
+        estimated_return = reported_return
+        return_source = (
+            str(holding.get("holding_pnl_source") or "broker_reported")
+            if reported_return is not None
+            else None
+        )
+        if estimated_return is None and average_cost is not None and average_cost > 0 and live_price is not None:
+            estimated_return = round((live_price / average_cost - 1) * 100, 2)
+            return_source = "derived_from_cost"
         holdings.append(
             {
                 "symbol": symbol,
@@ -555,14 +621,162 @@ def _model_analysis_context(
                 "market_session": str(quote.get("market_session") or "unknown"),
                 "price_session": str(quote.get("price_session") or "unknown"),
                 "change_percent": quote.get("change_percent"),
-                "has_user_rule": symbol in profile_symbols,
+                "change_source": quote.get("change_source"),
+                "invested_weight_percent": invested_weight,
+                "account_weight_percent": account_weight,
+                "estimated_return_percent": estimated_return,
+                "return_source": return_source,
+                "available_quantity_known": holding.get("available_quantity") is not None,
+                "has_user_rule": profile is not None,
+                "user_rule": _model_profile_context(profile),
             }
         )
+    data_coverage = _analysis_data_coverage(
+        snapshot,
+        holdings,
+        profile_by_symbol,
+        account_value_cny=account_value_cny,
+    )
     return {
         "analysis_mode": "full",
         "holding_count": len(holdings),
         "live_quote_count": live_quote_count,
+        "snapshot_as_of": snapshot.get("as_of"),
+        "weight_basis": "account_net_assets" if account_value_cny is not None else "invested_holdings_only",
+        "theme_concentration": [
+            {"theme": item.get("theme"), "weight_percent": item.get("weight_percent")}
+            for item in portfolio_summary.get("theme_concentration", [])
+        ],
+        "data_coverage": data_coverage,
         "holdings": holdings,
+    }
+
+
+def _analysis_data_coverage(
+    snapshot: dict[str, Any],
+    model_holdings: list[dict[str, Any]],
+    profile_by_symbol: dict[str, dict[str, Any]],
+    *,
+    account_value_cny: float | None,
+) -> list[dict[str, Any]]:
+    active = [item for item in snapshot.get("holdings", []) if float(item.get("quantity") or 0) > 0]
+    total = len(active)
+    quote_by_symbol = {
+        str(item.get("symbol") or "").upper(): item.get("live_quote") or {}
+        for item in active
+    }
+    derived_return_count = sum(item.get("estimated_return_percent") is not None for item in model_holdings)
+    theme_count = sum(str(item.get("theme") or "未分类") != "未分类" for item in active)
+    profile_count = sum(str(item.get("symbol") or "").upper() in profile_by_symbol for item in active)
+    rows = [
+        _coverage_row("quantity", "持仓数量", sum(item.get("quantity") is not None for item in active), total, "原始数量保留在本地规则层，不发送给模型"),
+        _coverage_row("cost_basis", "持仓成本", sum(_optional_number(item.get("average_cost")) is not None for item in active), total, "成本仅用于本地派生收益率"),
+        _coverage_row(
+            "market_value",
+            "持仓市值",
+            sum(
+                _optional_number(item.get("live_market_value")) is not None
+                or _optional_number(item.get("market_value")) is not None
+                for item in active
+            ),
+            total,
+            "优先使用实时价乘数量，绝对市值不发送给模型",
+            derived=True,
+        ),
+        _coverage_row("invested_weight", "持仓内权重", sum(item.get("invested_weight_percent") is not None for item in model_holdings), total, "按已投资持仓市值与统一汇率派生", derived=True),
+        _coverage_row("estimated_return", "成本收益率", derived_return_count, total, "优先使用券商盈亏比例，否则按现价与成本估算", derived=True),
+        _coverage_row("daily_change", "当日涨跌幅", sum(_optional_number(quote.get("change_percent")) is not None for quote in quote_by_symbol.values()), total, "优先使用行情源字段，缺失时由现价与昨收派生", derived=True),
+        _coverage_row("theme", "主题分类", theme_count, total, "用于计算主题集中度"),
+        _coverage_row("user_profile", "投资逻辑", profile_count, total, "逐标的投资论文、反方和操作条件"),
+        _coverage_row("available_quantity", "可卖数量", sum(item.get("available_quantity") is not None for item in active), total, "缺失时禁止生成具体卖出数量"),
+        _coverage_row(
+            "account_weight",
+            "账户实际仓位",
+            sum(item.get("account_weight_percent") is not None for item in model_holdings),
+            total,
+            "需要账户净资产或总权益；否则只展示持仓内权重",
+            derived=account_value_cny is not None,
+        ),
+        _coverage_row("official_evidence", "公告与财报", 0, total, "官方公告聚合器尚未接入"),
+    ]
+    return rows
+
+
+def _coverage_row(
+    key: str,
+    label: str,
+    available: int,
+    total: int,
+    detail: str,
+    *,
+    derived: bool = False,
+) -> dict[str, Any]:
+    if total > 0 and available >= total:
+        status = "derived" if derived else "available"
+    elif available > 0:
+        status = "partial"
+    else:
+        status = "missing"
+    return {"key": key, "label": label, "status": status, "available": available, "total": total, "detail": detail}
+
+
+def _model_profile_context(profile: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not profile:
+        return None
+    keys = (
+        "thesis_summary", "information_grade", "research_confidence", "investment_certainty",
+        "strongest_bear_case", "buy_add_conditions", "reduce_conditions",
+        "exit_invalidation_conditions", "bear_scenario", "base_scenario", "bull_scenario",
+    )
+    return {key: profile.get(key) for key in keys if profile.get(key)}
+
+
+def _account_value_cny(account: dict[str, Any], rates_to_cny: dict[str, float]) -> float | None:
+    for key in ("net_assets_cny", "account_value_cny", "total_equity_cny"):
+        value = _optional_number(account.get(key))
+        if value is not None and value > 0:
+            return value
+    values: list[float] = []
+    for currency in ("CNY", "HKD", "USD"):
+        for prefix in ("net_assets", "account_value", "total_equity"):
+            value = _optional_number(account.get(f"{prefix}_{currency.lower()}"))
+            if value is not None and value > 0:
+                values.append(value * float(rates_to_cny.get(currency, 1.0)))
+                break
+    return sum(values) if values else None
+
+
+def _optional_number(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _portfolio_metrics_without_store(snapshot: dict[str, Any]) -> dict[str, Any]:
+    rates = {"CNY": 1.0, "HKD": 0.92, "USD": 7.2}
+    total = 0.0
+    by_theme: dict[str, float] = {}
+    for holding in snapshot.get("holdings", []):
+        if float(holding.get("quantity") or 0) <= 0:
+            continue
+        value = _optional_number(holding.get("live_market_value"))
+        if value is None:
+            value = _optional_number(holding.get("market_value"))
+        if value is None:
+            continue
+        cny = value * rates.get(str(holding.get("currency") or ""), 1.0)
+        total += cny
+        theme = str(holding.get("theme") or "未分类")
+        by_theme[theme] = by_theme.get(theme, 0) + cny
+    concentration = [
+        {"theme": theme, "weight_percent": round(value / total * 100, 2)}
+        for theme, value in sorted(by_theme.items(), key=lambda item: item[1], reverse=True)
+    ] if total else []
+    return {
+        "estimated_total_cny": round(total, 2),
+        "theme_concentration": concentration,
+        "fx": {"rates_to_cny": rates, "provider": "configured_fallback", "actionable": False},
     }
 
 

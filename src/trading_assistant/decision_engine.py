@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from .analysis_schedule import market_session_for_symbol
+from .fx import DEFAULT_RATES_TO_CNY
 from .schemas import DataQuality, Decision, Evidence, OrderDraft
 
 
@@ -35,6 +36,7 @@ def build_decisions(
     *,
     risk_settings: dict[str, Any] | None = None,
     risk_profiles: list[dict[str, Any]] | None = None,
+    rates_to_cny: dict[str, float] | None = None,
     now: datetime | None = None,
 ) -> list[Decision]:
     now = now or datetime.now(timezone.utc)
@@ -43,7 +45,9 @@ def build_decisions(
     snapshot_age = max(0, int((now - as_of).total_seconds()))
     holdings = [item for item in snapshot.get("holdings", []) if float(item.get("quantity") or 0) > 0]
 
-    total_cny = _portfolio_value_cny({**snapshot, "holdings": holdings})
+    rates = DEFAULT_RATES_TO_CNY | (rates_to_cny or {})
+    total_cny = _portfolio_value_cny({**snapshot, "holdings": holdings}, rates)
+    account_value_cny = _account_value_cny(snapshot.get("account") or {}, rates)
     profiles = {
         str(item["symbol"]).upper(): item
         for item in risk_profiles or []
@@ -61,7 +65,8 @@ def build_decisions(
         quote = quotes.get(symbol, {})
         quality = quote_quality(quote, now=now, symbol=symbol)
         profile = profiles.get(symbol, {})
-        current_weight = _holding_weight_cny(holding, total_cny)
+        current_weight = _holding_weight_cny(holding, total_cny, rates)
+        account_weight = _holding_weight_cny(holding, account_value_cny, rates) if account_value_cny else None
         thesis_evidence = _thesis_evidence(profile)
         profile_context = _profile_context(profile)
 
@@ -71,8 +76,8 @@ def build_decisions(
                     now=now,
                     symbol=symbol,
                     name=name,
-                    title=f"{name} 单一持仓集中度偏高",
-                    summary=f"当前估算仓位 {current_weight:.2f}%，超过你设置的 {max_weight:.2f}% 集中度提醒线。",
+                    title=f"{name} 持仓内权重偏高",
+                    summary=f"当前持仓内权重 {current_weight:.2f}%，超过你设置的 {max_weight:.2f}% 集中度提醒线。",
                     action="verify",
                     priority="high",
                     current_weight=current_weight,
@@ -162,6 +167,7 @@ def build_decisions(
             )
         elif stop_price is not None and current_price is not None and current_price <= stop_price:
             quantity = float(holding.get("quantity") or 0)
+            available_quantity = _available_quantity(holding)
             security_type = str(holding.get("security_type") or "stock").lower()
             position_intent = str(profile.get("position_intent") or "long_term")
             configured_response = str(profile.get("price_response") or "review")
@@ -170,7 +176,7 @@ def build_decisions(
             )
             response = "exit" if hard_exit else configured_response if configured_response in {"review", "stop_adding", "reduce"} else "review"
             action = "exit" if hard_exit else "reduce" if response == "reduce" else "verify"
-            quantity_delta = -quantity if hard_exit and quality.execution_ready else None
+            quantity_delta = -available_quantity if hard_exit and quality.execution_ready and available_quantity is not None else None
             candidates.append(
                 _decision(
                     now=now,
@@ -186,7 +192,9 @@ def build_decisions(
                     trigger=f"确认最新价格仍不高于 {stop_price:.3f}，并复核公告、行业、资金面和投资论文。",
                     invalid_if=_exit_condition(profile) or "报价失真、事件归因未完成或投资计划已更新时，先修改规则。",
                     current_limit=(
-                        "衍生品或已确认的战术价格止损允许硬退出；仍只生成草案。"
+                        "已确认硬退出语义，但可卖数量尚未同步；本次不生成具体数量或限价草案。"
+                        if hard_exit and available_quantity is None
+                        else "衍生品或已确认的战术价格止损允许硬退出；仍只生成草案。"
                         if hard_exit
                         else "长期股票的价格线只触发复核、暂停加仓或减仓检查，不自动清仓。"
                     ),
@@ -194,17 +202,19 @@ def build_decisions(
                     confidence="high",
                     quality=quality,
                     evidence=[Evidence(kind="risk_rule", title="用户确认价格复核线", detail=f"最新价 {current_price:.3f} ≤ {stop_price:.3f}", observed_at=quality.observed_at), *thesis_evidence],
-                    order=_exit_order(symbol, quantity, quote, now) if hard_exit and quality.execution_ready else None,
+                    order=_exit_order(symbol, available_quantity, quote, now)
+                    if hard_exit and quality.execution_ready and available_quantity is not None
+                    else None,
                     **profile_context,
                 )
             )
 
         target_weight = _number(profile.get("target_weight_percent"))
-        if target_weight is not None and current_weight is not None and abs(current_weight - target_weight) >= target_tolerance:
-            reducing = current_weight > target_weight
+        if target_weight is not None and account_weight is not None and abs(account_weight - target_weight) >= target_tolerance:
+            reducing = account_weight > target_weight
             condition = str(profile.get("reduce_conditions") if reducing else profile.get("buy_add_conditions") or "").strip()
             condition_ready = bool(condition) and quality.actionable
-            quantity_delta = _target_quantity_delta(holding, quote, total_cny, target_weight) if condition_ready and quality.execution_ready else None
+            quantity_delta = _target_quantity_delta(holding, quote, account_value_cny, target_weight, rates) if condition_ready and quality.execution_ready else None
             action = ("reduce" if reducing else "add") if condition_ready else "verify"
             candidates.append(
                 _decision(
@@ -212,10 +222,10 @@ def build_decisions(
                     symbol=symbol,
                     name=name,
                     title=f"{name} 偏离你设置的目标仓位",
-                    summary=f"当前估算仓位 {current_weight:.2f}%，目标 {target_weight:.2f}%，偏离超过 {target_tolerance:.2f} 个百分点。",
+                    summary=f"当前账户仓位 {account_weight:.2f}%，目标 {target_weight:.2f}%，偏离超过 {target_tolerance:.2f} 个百分点。",
                     action=action,
                     priority="normal",
-                    current_weight=current_weight,
+                    current_weight=account_weight,
                     target_weight=target_weight,
                     quantity_delta=quantity_delta,
                     trigger=condition or ("先填写并确认减仓条件。" if reducing else "先填写并确认买入或加仓条件。"),
@@ -232,7 +242,7 @@ def build_decisions(
                     policy_response="reduce" if reducing and condition_ready else "review",
                     confidence="high",
                     quality=quality,
-                    evidence=[Evidence(kind="risk_rule", title="用户确认目标仓位", detail=f"当前 {current_weight:.2f}%；目标 {target_weight:.2f}%"), *thesis_evidence],
+                    evidence=[Evidence(kind="risk_rule", title="用户确认目标仓位", detail=f"当前 {account_weight:.2f}%；目标 {target_weight:.2f}%"), *thesis_evidence],
                     **profile_context,
                 )
             )
@@ -422,12 +432,17 @@ def _exit_order(symbol: str, quantity: float, quote: dict[str, Any], now: dateti
     )
 
 
-def _target_quantity_delta(holding: dict[str, Any], quote: dict[str, Any], total_cny: float, target: float) -> float | None:
+def _target_quantity_delta(
+    holding: dict[str, Any],
+    quote: dict[str, Any],
+    total_cny: float,
+    target: float,
+    rates_to_cny: dict[str, float],
+) -> float | None:
     price = _number(quote.get("price"))
     if price is None or price <= 0:
         return None
-    rates = {"CNY": 1.0, "HKD": 0.92, "USD": 7.2}
-    rate = rates.get(str(holding.get("currency")), 1.0)
+    rate = rates_to_cny.get(str(holding.get("currency")), 1.0)
     current_value_cny = float(holding.get("live_market_value") or holding.get("market_value") or 0) * rate
     target_value_cny = total_cny * target / 100
     return round((target_value_cny - current_value_cny) / rate / price, 4)
@@ -496,21 +511,47 @@ def _decision(
     )
 
 
-def _portfolio_value_cny(snapshot: dict[str, Any]) -> float:
-    rates = {"CNY": 1.0, "HKD": 0.92, "USD": 7.2}
+def _portfolio_value_cny(snapshot: dict[str, Any], rates_to_cny: dict[str, float]) -> float:
     return sum(
         float(holding.get("live_market_value") or holding.get("market_value") or 0)
-        * rates.get(str(holding.get("currency")), 1.0)
+        * rates_to_cny.get(str(holding.get("currency")), 1.0)
         for holding in snapshot.get("holdings", [])
     )
 
 
-def _holding_weight_cny(holding: dict[str, Any], total_cny: float) -> float | None:
+def _holding_weight_cny(
+    holding: dict[str, Any],
+    total_cny: float,
+    rates_to_cny: dict[str, float],
+) -> float | None:
     if total_cny <= 0:
         return None
-    rates = {"CNY": 1.0, "HKD": 0.92, "USD": 7.2}
     value = float(holding.get("live_market_value") or holding.get("market_value") or 0)
-    return round(value * rates.get(str(holding.get("currency")), 1.0) / total_cny * 100, 2)
+    return round(value * rates_to_cny.get(str(holding.get("currency")), 1.0) / total_cny * 100, 2)
+
+
+def _account_value_cny(account: dict[str, Any], rates_to_cny: dict[str, float]) -> float | None:
+    for key in ("net_assets_cny", "account_value_cny", "total_equity_cny"):
+        value = _number(account.get(key))
+        if value is not None and value > 0:
+            return value
+    values: list[float] = []
+    for currency in ("CNY", "HKD", "USD"):
+        for prefix in ("net_assets", "account_value", "total_equity"):
+            value = _number(account.get(f"{prefix}_{currency.lower()}"))
+            if value is not None and value > 0:
+                values.append(value * rates_to_cny.get(currency, 1.0))
+                break
+    return sum(values) if values else None
+
+
+def _available_quantity(holding: dict[str, Any]) -> float | None:
+    if holding.get("available_quantity") is None:
+        return None
+    available = _number(holding.get("available_quantity"))
+    if available is None or available < 0:
+        return None
+    return min(available, float(holding.get("quantity") or 0))
 
 
 def _number(value: Any) -> float | None:

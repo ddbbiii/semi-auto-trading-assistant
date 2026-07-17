@@ -139,6 +139,9 @@ def analyze_refresh_with_report(
         "也不得改变仓位、数量、价格、优先级或有效期。"
         "你需要复核本次脱敏的持仓与行情覆盖情况，并生成结构化的组合分析报告。区分事实、推断和限制，"
         "不使用账户总资产，不虚构新闻、公告、估值、价格或数据源。"
+        "portfolio.data_coverage 是后端生成的权威覆盖说明：available 表示源数据存在，derived 表示本地已计算，"
+        "partial 或 missing 才能描述为缺失；不得把仅保留在本地、未发送原始值的数据说成用户没有同步。"
+        "invested_weight_percent 是已投资持仓内部权重，不等于包含现金的账户总仓位。"
         "如果存在决策，只为每条输入生成简短 title 和 summary。"
         "trigger、invalid_if、current_limit、policy_response、event_classification 和证据等级均由确定性规则锁定，不得改写。"
         "必须使用普通投资者能理解的简体中文，不得输出 quote_stale 等内部英文状态码。"
@@ -265,7 +268,10 @@ def _normalize_analysis_report(
         "reasoning": _normalize_report_items(raw.get("reasoning"), label_key="title", limit=6),
         "position_notes": position_notes[:12],
         "counterpoints": _normalize_text_list(raw.get("counterpoints"), 5),
-        "limitations": _normalize_text_list(raw.get("limitations"), 5),
+        "limitations": _authoritative_limitations(portfolio_context)
+        if portfolio_context.get("data_coverage")
+        else _normalize_text_list(raw.get("limitations"), 5),
+        "data_coverage": _normalize_data_coverage(portfolio_context.get("data_coverage")),
     }
     if not report["market_facts"] or not report["reasoning"]:
         fallback = _fallback_analysis_report(decisions, portfolio_context, summary)
@@ -302,8 +308,73 @@ def _fallback_analysis_report(
         ],
         "position_notes": [],
         "counterpoints": [],
-        "limitations": ["未完成模型解释时，只能展示行情覆盖和确定性规则结果。"],
+        "limitations": (
+            ["未完成模型解释时，只能展示行情覆盖和确定性规则结果。"]
+            + _authoritative_limitations(portfolio_context)
+        )[:6],
+        "data_coverage": _normalize_data_coverage(portfolio_context.get("data_coverage")),
     }
+
+
+def _normalize_data_coverage(value: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    allowed_statuses = {"available", "derived", "partial", "missing"}
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        key = _clean_text(item.get("key"), 50)
+        label = _clean_text(item.get("label"), 50)
+        status = str(item.get("status") or "missing")
+        if not key or not label or status not in allowed_statuses:
+            continue
+        result.append(
+            {
+                "key": key,
+                "label": label,
+                "status": status,
+                "available": max(0, int(item.get("available") or 0)),
+                "total": max(0, int(item.get("total") or 0)),
+                "detail": _clean_text(item.get("detail"), 240),
+            }
+        )
+    return result[:16]
+
+
+def _authoritative_limitations(portfolio_context: dict[str, Any]) -> list[str]:
+    coverage = {
+        str(item.get("key")): item
+        for item in portfolio_context.get("data_coverage", [])
+        if isinstance(item, dict)
+    }
+    limitations: list[str] = []
+
+    account_weight = coverage.get("account_weight", {})
+    if account_weight.get("status") in {"missing", "partial"}:
+        limitations.append("尚未同步账户净资产和现金，当前权重仅表示已投资持仓内部占比，不能代表账户总仓位。")
+
+    available_quantity = coverage.get("available_quantity", {})
+    if available_quantity.get("status") in {"missing", "partial"}:
+        limitations.append(
+            f"可卖数量仅覆盖 {int(available_quantity.get('available') or 0)}/{int(available_quantity.get('total') or 0)} 个持仓；未覆盖标的不生成具体卖出数量。"
+        )
+
+    user_profile = coverage.get("user_profile", {})
+    if user_profile.get("status") in {"missing", "partial"}:
+        limitations.append(
+            f"逐标的投资逻辑仅覆盖 {int(user_profile.get('available') or 0)}/{int(user_profile.get('total') or 0)} 个持仓；其余标的只能执行通用风险检查。"
+        )
+
+    daily_change = coverage.get("daily_change", {})
+    if daily_change.get("status") in {"missing", "partial"}:
+        limitations.append(
+            f"当日涨跌幅仅覆盖 {int(daily_change.get('available') or 0)}/{int(daily_change.get('total') or 0)} 个持仓，异常波动比较可能不完整。"
+        )
+
+    official_evidence = coverage.get("official_evidence", {})
+    if official_evidence.get("status") in {"missing", "partial"}:
+        limitations.append("官方公告、财报和事件证据尚未接入，本次不能据此判断基本面变化或催化剂。")
+
+    return limitations[:5]
 
 
 def _normalize_report_items(value: Any, *, label_key: str, limit: int) -> list[dict[str, str]]:
