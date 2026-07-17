@@ -166,9 +166,10 @@ function AnalysisBlock({ icon, eyebrow, title, items }: { icon: React.ReactNode;
 
 function CalculationReceipt({ receipt, modelStatus, retrying, onRetry }: { receipt: DecisionRefreshResponse["summary"]; modelStatus?: LlmStatus; retrying: boolean; onRetry: () => void }) {
     const marketState = receipt.market_data_status === "success" ? "success" : receipt.market_data_status === "partial" ? "partial" : "failed";
+    const officialState = receipt.official_evidence_status === "ok" ? "success" : receipt.official_evidence_status === "partial" ? "partial" : "failed";
     const modelFailed = modelStatus?.connectivity === "error" || modelStatus?.test === "failed" || receipt.model_status === "failed_fallback" || receipt.model_status === "skipped_not_configured";
     const modelState = receipt.model_status === "used" ? "success" : modelFailed ? "failed" : "not_called";
-    const overallWarning = marketState !== "success" || modelState === "failed";
+    const overallWarning = marketState !== "success" || officialState !== "success" || modelState === "failed";
     const modelDetail = receipt.model_status === "used"
         ? receipt.model_summary || "模型 API 已完成本次完整分析。"
         : modelFailed
@@ -177,9 +178,9 @@ function CalculationReceipt({ receipt, modelStatus, retrying, onRetry }: { recei
                 ? "本次属于 15 分钟轻量监控，按设置不调用模型 API。"
                 : "当前回执来自旧版跳过逻辑，请重新执行完整分析。";
     return <div className={`calculation-receipt ${overallWarning ? "warning" : ""}`} role={overallWarning ? "alert" : undefined}>
-        <div className="calculation-receipt-heading"><Check /><span><strong>计算完成</strong><small>检查 {receipt.checked_holdings} 个持仓 · {receipt.generic_rules} 条通用规则 · {receipt.active_user_rules} 组用户规则 · 触发 {receipt.decision_count} 项</small></span><em>{new Date(receipt.completed_at).toLocaleTimeString("zh-CN", { hour12: false })}</em></div>
+        <div className="calculation-receipt-heading"><Check /><span><strong>计算完成</strong><small>检查 {receipt.checked_holdings} 个持仓 · 全局规则已应用 · {receipt.active_user_rules} 组可选覆盖 · 触发 {receipt.decision_count} 项</small></span><em>{new Date(receipt.completed_at).toLocaleTimeString("zh-CN", { hour12: false })}</em></div>
         <div className="calculation-channel-grid">
-            <section className="calculation-channel-group"><strong>后端与行情 API</strong><ChannelLine label="后端重算 API" state="success" detail="已完成规则检查" /><ChannelLine label="行情 API" state={marketState} detail={`${receipt.market_data_live}/${receipt.market_data_total} 条行情可用${receipt.market_data_fallback ? `，${receipt.market_data_fallback} 条使用备用源` : ""}`} /></section>
+            <section className="calculation-channel-group"><strong>后端与数据 API</strong><ChannelLine label="后端重算 API" state="success" detail="已完成全局规则检查" /><ChannelLine label="行情 API" state={marketState} detail={`${receipt.market_data_live}/${receipt.market_data_total} 条行情可用${receipt.market_data_fallback ? `，${receipt.market_data_fallback} 条使用备用源` : ""}`} /><ChannelLine label="官方公告 API" state={officialState} detail={`${receipt.official_evidence_checked}/${receipt.official_evidence_total} 个标的已检查，取得 ${receipt.official_evidence_documents} 条近期文件`} /></section>
             <section className="calculation-channel-group"><strong>大模型 API</strong><ChannelLine label={modelState === "not_called" ? "本次未调用" : modelState === "success" ? "调用成功" : "调用失败"} state={modelState} detail={modelDetail} />{modelState !== "success" ? <button className="calculation-channel-action" type="button" disabled={retrying} onClick={onRetry}>{retrying ? "完整分析中…" : "重新执行完整分析"}</button> : null}</section>
         </div>
     </div>;
@@ -256,7 +257,7 @@ function DecisionCard({ decision, rank, onChanged }: { decision: Decision; rank:
             </div>
             <div className="condition-grid"><div><span>{decision.data_quality.actionable ? "触发依据" : "恢复计算需要"}</span><p>{humanize(decision.trigger)}</p></div><div><span>当前限制</span><p>{humanize(decision.current_limit || "无额外限制")}</p></div><div><span>失效条件</span><p>{humanize(decision.invalid_if)}</p></div></div>
             {decision.order_draft ? <div className="order-draft"><ArrowDownRight /><div><strong>限价草案：卖出 {decision.order_draft.quantity}</strong><span>{decision.order_draft.limit_price_low}–{decision.order_draft.limit_price_high} · 仅供复制，不会自动提交</span></div></div> : null}
-            <details className="evidence"><summary>查看 {decision.evidence.length} 条判断依据<ChevronDown /></summary><div>{decision.evidence.map((item, index) => <div className="evidence-row" key={`${item.title}-${index}`}><span>{evidenceKindCopy[item.kind] || "依据"}</span><p><strong>{item.title}</strong>{humanize(item.detail)}</p></div>)}</div></details>
+            <details className="evidence"><summary>查看 {decision.evidence.length} 条判断依据<ChevronDown /></summary><div>{decision.evidence.map((item, index) => <div className="evidence-row" key={`${item.title}-${index}`}><span>{evidenceKindCopy[item.kind] || "依据"}</span><p>{item.source_url ? <a href={item.source_url} target="_blank" rel="noreferrer">{item.title}</a> : <strong>{item.title}</strong>}{humanize(item.detail)}</p></div>)}</div></details>
             <div className="decision-actions">
                 <button className="done" onClick={() => setFeedback("executed")}><Check />已执行</button>
                 <button onClick={() => setFeedback("snoozed")}><Clock3 />稍后</button>

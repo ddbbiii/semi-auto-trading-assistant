@@ -36,6 +36,7 @@ def build_decisions(
     *,
     risk_settings: dict[str, Any] | None = None,
     risk_profiles: list[dict[str, Any]] | None = None,
+    official_evidence_by_symbol: dict[str, list[dict[str, Any]]] | None = None,
     rates_to_cny: dict[str, float] | None = None,
     now: datetime | None = None,
 ) -> list[Decision]:
@@ -68,6 +69,7 @@ def build_decisions(
         current_weight = _holding_weight_cny(holding, total_cny, rates)
         account_weight = _holding_weight_cny(holding, account_value_cny, rates) if account_value_cny else None
         thesis_evidence = _thesis_evidence(profile)
+        official_evidence = _official_evidence((official_evidence_by_symbol or {}).get(symbol, []))
         profile_context = _profile_context(profile)
 
         if current_weight is not None and current_weight > max_weight:
@@ -87,7 +89,7 @@ def build_decisions(
                     policy_response="review",
                     confidence="high",
                     quality=_snapshot_quality(snapshot, as_of, snapshot_age),
-                    evidence=[Evidence(kind="position", title="通用集中度规则", detail=f"{current_weight:.2f}% > {max_weight:.2f}%", observed_at=as_of), *thesis_evidence],
+                    evidence=[Evidence(kind="position", title="通用集中度规则", detail=f"{current_weight:.2f}% > {max_weight:.2f}%", observed_at=as_of), *thesis_evidence, *official_evidence],
                     **profile_context,
                 )
             )
@@ -112,7 +114,7 @@ def build_decisions(
                     event_classification="unexplained",
                     confidence="medium",
                     quality=quality,
-                    evidence=[Evidence(kind="price", title="通用异常波动规则", detail=f"{change_percent:+.2f}%；阈值 ±{move_threshold:.2f}%", observed_at=quality.observed_at), *thesis_evidence],
+                    evidence=[Evidence(kind="price", title="通用异常波动规则", detail=f"{change_percent:+.2f}%；阈值 ±{move_threshold:.2f}%", observed_at=quality.observed_at), *thesis_evidence, *official_evidence],
                     **profile_context,
                 )
             )
@@ -137,7 +139,7 @@ def build_decisions(
                         policy_response="review",
                         confidence="high",
                         quality=_snapshot_quality(snapshot, as_of, snapshot_age),
-                        evidence=[Evidence(kind="risk_rule", title="通用到期预警", detail=f"到期日 {expiry.isoformat()}；剩余 {days_left} 天"), *thesis_evidence],
+                        evidence=[Evidence(kind="risk_rule", title="通用到期预警", detail=f"到期日 {expiry.isoformat()}；剩余 {days_left} 天"), *thesis_evidence, *official_evidence],
                         **profile_context,
                     )
                 )
@@ -161,7 +163,7 @@ def build_decisions(
                     policy_response="review",
                     confidence="medium",
                     quality=quality,
-                    evidence=[Evidence(kind="risk_rule", title="用户确认价格复核线", detail=f"{stop_price:.3f}"), *thesis_evidence],
+                    evidence=[Evidence(kind="risk_rule", title="用户确认价格复核线", detail=f"{stop_price:.3f}"), *thesis_evidence, *official_evidence],
                     **profile_context,
                 )
             )
@@ -201,7 +203,7 @@ def build_decisions(
                     policy_response=response,
                     confidence="high",
                     quality=quality,
-                    evidence=[Evidence(kind="risk_rule", title="用户确认价格复核线", detail=f"最新价 {current_price:.3f} ≤ {stop_price:.3f}", observed_at=quality.observed_at), *thesis_evidence],
+                    evidence=[Evidence(kind="risk_rule", title="用户确认价格复核线", detail=f"最新价 {current_price:.3f} ≤ {stop_price:.3f}", observed_at=quality.observed_at), *thesis_evidence, *official_evidence],
                     order=_exit_order(symbol, available_quantity, quote, now)
                     if hard_exit and quality.execution_ready and available_quantity is not None
                     else None,
@@ -242,7 +244,7 @@ def build_decisions(
                     policy_response="reduce" if reducing and condition_ready else "review",
                     confidence="high",
                     quality=quality,
-                    evidence=[Evidence(kind="risk_rule", title="用户确认目标仓位", detail=f"当前 {account_weight:.2f}%；目标 {target_weight:.2f}%"), *thesis_evidence],
+                    evidence=[Evidence(kind="risk_rule", title="用户确认目标仓位", detail=f"当前 {account_weight:.2f}%；目标 {target_weight:.2f}%"), *thesis_evidence, *official_evidence],
                     **profile_context,
                 )
             )
@@ -394,6 +396,28 @@ def _thesis_evidence(profile: dict[str, Any]) -> list[Evidence]:
         for title, detail in entries
         if str(detail or "").strip()
     ]
+
+
+def _official_evidence(items: list[dict[str, Any]]) -> list[Evidence]:
+    result: list[Evidence] = []
+    for item in items[:3]:
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        kind = str(item.get("kind") or "filing")
+        if kind not in {"filing", "news"}:
+            kind = "filing"
+        observed_at = item.get("observed_at")
+        result.append(
+            Evidence(
+                kind=kind,
+                title=title,
+                detail=str(item.get("detail") or item.get("provider") or "官方披露来源"),
+                source_url=str(item.get("source_url") or "") or None,
+                observed_at=_datetime(observed_at) if observed_at else None,
+            )
+        )
+    return result
 
 
 def _exit_condition(profile: dict[str, Any]) -> str:

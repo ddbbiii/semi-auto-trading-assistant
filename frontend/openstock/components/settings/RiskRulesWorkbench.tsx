@@ -77,7 +77,7 @@ export default function RiskRulesWorkbench() {
     if (!settings || !draft) return <section className="settings-panel risk-settings-panel"><RefreshCw className="spin" /><strong>{error || "正在读取风险规则…"}</strong></section>;
 
     return <section className="settings-panel risk-settings-panel">
-        <div className="settings-panel-heading"><div className="settings-heading-icon"><ShieldAlert /></div><div><h2>组合规则与逐标的论文</h2><p>通用阈值只触发复核；买入、减仓和退出必须满足用户保存的前置条件。</p></div></div>
+        <div className="settings-panel-heading"><div className="settings-heading-icon"><ShieldAlert /></div><div><h2>全局决策规则与可选覆盖</h2><p>全局投资框架默认适用于全部持仓；只有需要特殊目标仓位、价格线或个股论文时才添加覆盖。</p></div></div>
         <div className="generic-rule-grid">
             <RuleNumber label="单一持仓集中度" suffix="%" value={draft.max_single_position_percent} onChange={(value) => setDraft({ ...draft, max_single_position_percent: value })} detail="只提示风险贡献复核，不是减仓目标" />
             <RuleNumber label="单日异常波动" suffix="%" value={draft.daily_move_alert_percent} onChange={(value) => setDraft({ ...draft, daily_move_alert_percent: value })} detail="先归因公告、行业和资金面" />
@@ -85,7 +85,7 @@ export default function RiskRulesWorkbench() {
             <RuleNumber label="目标仓位容忍度" suffix="百分点" value={draft.target_weight_tolerance_percent} onChange={(value) => setDraft({ ...draft, target_weight_tolerance_percent: value })} detail="偏离本身不构成交易理由" />
         </div>
 
-        <div className="holding-rule-heading"><div><SlidersHorizontal /><span><strong>每标的决策档案</strong><small>清仓后自动停用；重新买入不会沿用旧论文</small></span></div><em>{settings.active_profile_count} 组已启用</em></div>
+        <div className="holding-rule-heading"><div><SlidersHorizontal /><span><strong>逐标的可选覆盖</strong><small>不填写也会使用全局规则；清仓后覆盖自动停用，重新买入不会沿用</small></span></div><em>{settings.active_profile_count} 组已启用</em></div>
         <div className="holding-rule-list">{draft.holdings.map((holding) => {
             const profile = profiles[holding.symbol] || emptyProfile();
             return <details className="holding-rule-row" key={holding.symbol}>

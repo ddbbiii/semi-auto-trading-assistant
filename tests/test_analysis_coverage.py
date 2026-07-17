@@ -97,7 +97,10 @@ def test_model_context_uses_derived_metrics_without_raw_position_values() -> Non
     assert coverage["quantity"]["status"] == "available"
     assert coverage["cost_basis"]["status"] == "available"
     assert coverage["estimated_return"]["status"] == "derived"
-    assert coverage["user_profile"]["status"] == "partial"
+    assert coverage["decision_policy"]["status"] == "available"
+    assert coverage["decision_policy"]["available"] == 2
+    assert "全局投资决策框架" in coverage["decision_policy"]["detail"]
+    assert context["investment_policy"]["name"] == "投资决策框架"
     assert coverage["account_weight"]["status"] == "missing"
 
 
@@ -119,7 +122,8 @@ def test_model_cannot_replace_authoritative_data_limitations() -> None:
 
     assert all("缺少持仓数量" not in item for item in report["limitations"])
     assert any("账户净资产和现金" in item for item in report["limitations"])
-    assert any("投资逻辑仅覆盖 0/2" in item for item in report["limitations"])
+    assert all("逐标的投资逻辑" not in item for item in report["limitations"])
+    assert any("官方公告与财报来源" in item for item in report["limitations"])
     assert report["data_coverage"] == context["data_coverage"]
 
 

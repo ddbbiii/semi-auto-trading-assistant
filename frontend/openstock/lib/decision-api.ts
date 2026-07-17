@@ -242,6 +242,10 @@ export type DecisionRefreshResponse = {
         market_data_live: number;
         market_data_total: number;
         market_data_fallback: number;
+        official_evidence_status: "ok" | "partial" | "degraded";
+        official_evidence_checked: number;
+        official_evidence_total: number;
+        official_evidence_documents: number;
         data_coverage?: DataCoverageItem[];
         model_status: "used" | "skipped_no_decisions" | "skipped_not_configured" | "skipped_lightweight" | "failed_fallback";
         model_summary?: string | null;

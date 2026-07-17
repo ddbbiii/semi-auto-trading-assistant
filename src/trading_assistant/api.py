@@ -26,6 +26,7 @@ from .imports import preview_import_batch, snapshot_payload
 from .investment_policy import investment_policy_payload
 from .llm import analyze_refresh_with_report, status as llm_status, test_connection as test_llm_connection
 from .notifications import EmailAlertConfig, maybe_send_decision_alert_email
+from .official_evidence import refresh_official_evidence
 from .portfolio_state import CURRENT_PORTFOLIO, get_monitoring_payload, get_portfolio_payload
 from .providers import futu_status, get_quotes
 from .risk import RiskEngine
@@ -49,6 +50,10 @@ class DecisionRefreshResult:
     market_data_live: int
     market_data_total: int
     market_data_fallback: int
+    official_evidence_status: str
+    official_evidence_checked: int
+    official_evidence_total: int
+    official_evidence_documents: int
     data_coverage: list[dict[str, Any]]
     completed_at: datetime
 
@@ -68,6 +73,10 @@ class DecisionRefreshResult:
                 "market_data_live": self.market_data_live,
                 "market_data_total": self.market_data_total,
                 "market_data_fallback": self.market_data_fallback,
+                "official_evidence_status": self.official_evidence_status,
+                "official_evidence_checked": self.official_evidence_checked,
+                "official_evidence_total": self.official_evidence_total,
+                "official_evidence_documents": self.official_evidence_documents,
                 "data_coverage": self.data_coverage,
                 "completed_at": self.completed_at.isoformat(),
             },
@@ -306,6 +315,16 @@ def create_app(store: Store | None = None, *, schedule: bool | None = None) -> F
             "unclassified": sum(1 for theme in themes.values() if theme == "未分类"),
         }
 
+    @app.post("/api/v1/evidence/refresh")
+    def evidence_refresh(db: Store = Depends(current_store)) -> dict[str, Any]:
+        snapshot = db.latest_snapshot()
+        if snapshot is None:
+            raise HTTPException(status_code=503, detail="还没有持仓快照。")
+        active = [item for item in snapshot.get("holdings", []) if float(item.get("quantity") or 0) > 0]
+        results = refresh_official_evidence(active)
+        db.save_official_evidence([item.payload() for item in results])
+        return _official_evidence_status(db, active)
+
     @app.post("/api/v1/decisions/{decision_id}/feedback")
     def decision_feedback(
         decision_id: str,
@@ -333,7 +352,7 @@ def create_app(store: Store | None = None, *, schedule: bool | None = None) -> F
             "futu": futu_status(),
             "llm": llm_status(),
             "email": {"status": "configured" if email.enabled and not email.missing_fields else "not_configured"},
-            "news": {"status": "degraded", "detail": "官方公告聚合器待配置。"},
+            "news": _official_evidence_status(db, (snapshot or {}).get("holdings", [])),
             "analysis_schedule": _analysis_settings_payload(db),
         }
 
@@ -420,6 +439,15 @@ def refresh_decisions(
             store.reconcile_risk_profiles(snapshot)
             quotes = {item["symbol"]: item.get("live_quote", {}) for item in snapshot["holdings"]}
             profiles = store.risk_profiles(active_only=True)
+            active_symbols = [
+                str(item.get("symbol") or "").upper()
+                for item in snapshot.get("holdings", [])
+                if float(item.get("quantity") or 0) > 0
+            ]
+            if enrich:
+                evidence_results = refresh_official_evidence(snapshot.get("holdings", []))
+                store.save_official_evidence([item.payload() for item in evidence_results])
+            official_evidence_state = store.official_evidence_state(active_symbols)
             portfolio_summary = _portfolio_summary(snapshot, store)
             rates_to_cny = portfolio_summary["fx"]["rates_to_cny"]
             decisions = [
@@ -429,6 +457,7 @@ def refresh_decisions(
                     quotes,
                     risk_settings=store.risk_settings(),
                     risk_profiles=profiles,
+                    official_evidence_by_symbol=official_evidence_state.get("documents", {}),
                     rates_to_cny=rates_to_cny,
                 )
             ]
@@ -438,7 +467,7 @@ def refresh_decisions(
             if enrich:
                 decisions, model_status, model_summary, analysis_report = analyze_refresh_with_report(
                     decisions,
-                    _model_analysis_context(snapshot, profiles, portfolio_summary),
+                    _model_analysis_context(snapshot, profiles, portfolio_summary, official_evidence_state),
                 )
                 completed_at = datetime.now(timezone.utc)
                 analysis_report = analysis_report | {
@@ -459,7 +488,11 @@ def refresh_decisions(
                 if actionable:
                     maybe_send_decision_alert_email(actionable)
             checked = sum(1 for item in snapshot["holdings"] if float(item.get("quantity") or 0) > 0)
-            detail = f"{len(decisions)} decisions; {checked} holdings; {len(profiles)} user rules; model={model_status}"
+            official_summary = _official_evidence_summary(official_evidence_state, active_symbols)
+            detail = (
+                f"{len(decisions)} decisions; {checked} holdings; {len(profiles)} optional overrides; "
+                f"official={official_summary['checked']}/{official_summary['total']}; model={model_status}"
+            )
             store.finish_sync(run_id, status="completed", detail=detail)
             return DecisionRefreshResult(
                 decisions=decisions,
@@ -472,6 +505,10 @@ def refresh_decisions(
                 market_data_live=market_data_live,
                 market_data_total=market_data_total,
                 market_data_fallback=market_data_fallback,
+                official_evidence_status=official_summary["status"],
+                official_evidence_checked=official_summary["checked"],
+                official_evidence_total=official_summary["total"],
+                official_evidence_documents=official_summary["documents"],
                 data_coverage=(analysis_report or {}).get("data_coverage", []),
                 completed_at=completed_at,
             )
@@ -554,6 +591,7 @@ def _model_analysis_context(
     snapshot: dict[str, Any],
     profiles: list[dict[str, Any]],
     portfolio_summary: dict[str, Any] | None = None,
+    official_evidence_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a model-safe view from local derived metrics and authoritative coverage."""
     portfolio_summary = portfolio_summary or _portfolio_metrics_without_store(snapshot)
@@ -565,6 +603,7 @@ def _model_analysis_context(
         for item in profiles
         if str(item.get("symbol") or "").strip()
     }
+    official_evidence_state = official_evidence_state or {"checks": {}, "documents": {}}
     holdings = []
     live_quote_count = 0
     active_holdings = [
@@ -578,6 +617,7 @@ def _model_analysis_context(
         symbol = str(holding.get("symbol") or "").upper()
         quote = holding.get("live_quote") or {}
         profile = profile_by_symbol.get(symbol)
+        official_documents = list((official_evidence_state.get("documents") or {}).get(symbol, []))
         if quote.get("status") == "live" and isinstance(quote.get("price"), (int, float)):
             live_quote_count += 1
         market_value = _optional_number(holding.get("live_market_value"))
@@ -629,12 +669,24 @@ def _model_analysis_context(
                 "available_quantity_known": holding.get("available_quantity") is not None,
                 "has_user_rule": profile is not None,
                 "user_rule": _model_profile_context(profile),
+                "official_evidence": [
+                    {
+                        "title": str(item.get("title") or ""),
+                        "kind": str(item.get("kind") or "filing"),
+                        "provider": str(item.get("provider") or "official"),
+                        "observed_at": item.get("observed_at"),
+                        "source_url": item.get("source_url"),
+                    }
+                    for item in official_documents[:3]
+                    if str(item.get("title") or "").strip()
+                ],
             }
         )
     data_coverage = _analysis_data_coverage(
         snapshot,
         holdings,
         profile_by_symbol,
+        official_evidence_state,
         account_value_cny=account_value_cny,
     )
     return {
@@ -642,6 +694,8 @@ def _model_analysis_context(
         "holding_count": len(holdings),
         "live_quote_count": live_quote_count,
         "snapshot_as_of": snapshot.get("as_of"),
+        "investment_policy": investment_policy_payload(),
+        "optional_symbol_override_count": len(profile_by_symbol),
         "weight_basis": "account_net_assets" if account_value_cny is not None else "invested_holdings_only",
         "theme_concentration": [
             {"theme": item.get("theme"), "weight_percent": item.get("weight_percent")}
@@ -656,6 +710,7 @@ def _analysis_data_coverage(
     snapshot: dict[str, Any],
     model_holdings: list[dict[str, Any]],
     profile_by_symbol: dict[str, dict[str, Any]],
+    official_evidence_state: dict[str, Any],
     *,
     account_value_cny: float | None,
 ) -> list[dict[str, Any]]:
@@ -668,6 +723,10 @@ def _analysis_data_coverage(
     derived_return_count = sum(item.get("estimated_return_percent") is not None for item in model_holdings)
     theme_count = sum(str(item.get("theme") or "未分类") != "未分类" for item in active)
     profile_count = sum(str(item.get("symbol") or "").upper() in profile_by_symbol for item in active)
+    official_summary = _official_evidence_summary(
+        official_evidence_state,
+        [str(item.get("symbol") or "").upper() for item in active],
+    )
     rows = [
         _coverage_row("quantity", "持仓数量", sum(item.get("quantity") is not None for item in active), total, "原始数量保留在本地规则层，不发送给模型"),
         _coverage_row("cost_basis", "持仓成本", sum(_optional_number(item.get("average_cost")) is not None for item in active), total, "成本仅用于本地派生收益率"),
@@ -687,7 +746,13 @@ def _analysis_data_coverage(
         _coverage_row("estimated_return", "成本收益率", derived_return_count, total, "优先使用券商盈亏比例，否则按现价与成本估算", derived=True),
         _coverage_row("daily_change", "当日涨跌幅", sum(_optional_number(quote.get("change_percent")) is not None for quote in quote_by_symbol.values()), total, "优先使用行情源字段，缺失时由现价与昨收派生", derived=True),
         _coverage_row("theme", "主题分类", theme_count, total, "用于计算主题集中度"),
-        _coverage_row("user_profile", "投资逻辑", profile_count, total, "逐标的投资论文、反方和操作条件"),
+        _coverage_row(
+            "decision_policy",
+            "决策规则",
+            total,
+            total,
+            f"全局投资决策框架适用于全部持仓；{profile_count}/{total} 个标的另有可选覆盖",
+        ),
         _coverage_row("available_quantity", "可卖数量", sum(item.get("available_quantity") is not None for item in active), total, "缺失时禁止生成具体卖出数量"),
         _coverage_row(
             "account_weight",
@@ -697,9 +762,65 @@ def _analysis_data_coverage(
             "需要账户净资产或总权益；否则只展示持仓内权重",
             derived=account_value_cny is not None,
         ),
-        _coverage_row("official_evidence", "公告与财报", 0, total, "官方公告聚合器尚未接入"),
+        _coverage_row(
+            "official_evidence",
+            "公告与财报",
+            official_summary["checked"],
+            total,
+            f"官方来源已检查 {official_summary['checked']}/{total} 个标的；近期官方文件 {official_summary['documents']} 条",
+        ),
     ]
     return rows
+
+
+def _official_evidence_summary(
+    state: dict[str, Any],
+    symbols: list[str],
+) -> dict[str, Any]:
+    normalized = sorted({str(symbol).upper() for symbol in symbols if str(symbol).strip()})
+    checks = state.get("checks") or {}
+    documents = state.get("documents") or {}
+    checked = sum(
+        1
+        for symbol in normalized
+        if (checks.get(symbol) or {}).get("status") == "ok" and (checks.get(symbol) or {}).get("fresh") is True
+    )
+    document_count = sum(len(documents.get(symbol) or []) for symbol in normalized)
+    total = len(normalized)
+    status = "ok" if total > 0 and checked == total else "partial" if checked else "degraded"
+    return {
+        "status": status,
+        "checked": checked,
+        "total": total,
+        "documents": document_count,
+    }
+
+
+def _official_evidence_status(store: Store, holdings: list[dict[str, Any]]) -> dict[str, Any]:
+    symbols = [
+        str(item.get("symbol") or "").upper()
+        for item in holdings
+        if float(item.get("quantity") or 0) > 0
+    ]
+    state = store.official_evidence_state(symbols)
+    summary = _official_evidence_summary(state, symbols)
+    failures = [
+        {
+            "symbol": symbol,
+            "provider": check.get("provider"),
+            "detail": check.get("detail"),
+        }
+        for symbol, check in (state.get("checks") or {}).items()
+        if check.get("status") != "ok" or check.get("fresh") is not True
+    ]
+    return summary | {
+        "detail": (
+            f"已检查 {summary['checked']}/{summary['total']} 个持仓标的，保存 {summary['documents']} 条近期官方文件。"
+            if summary["total"]
+            else "当前没有需要查询的持仓标的。"
+        ),
+        "failures": failures[:5],
+    }
 
 
 def _coverage_row(

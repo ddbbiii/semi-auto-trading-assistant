@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -358,6 +358,120 @@ class Store:
                     )
                 )
             session.commit()
+
+    def save_official_evidence(self, results: list[dict[str, Any]]) -> None:
+        """Persist one current source check and the latest official documents per symbol/provider."""
+        with self.session() as session:
+            for result in results:
+                symbol = str(result.get("symbol") or "").upper()
+                provider = str(result.get("provider") or "unknown")
+                if not symbol:
+                    continue
+                checked_at = _parse_datetime(result.get("checked_at") or datetime.now(timezone.utc))
+                status = str(result.get("status") or "failed")
+                session.execute(
+                    delete(EvidenceRecord).where(
+                        EvidenceRecord.symbol == symbol,
+                        EvidenceRecord.provider == provider,
+                        EvidenceRecord.kind == "source_check",
+                    )
+                )
+                session.add(
+                    EvidenceRecord(
+                        symbol=symbol,
+                        kind="source_check",
+                        provider=provider,
+                        observed_at=checked_at,
+                        payload_json=json.dumps(
+                            {
+                                "status": status,
+                                "detail": str(result.get("detail") or ""),
+                                "event_count": len(result.get("events") or []),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                )
+                if status != "ok":
+                    continue
+                session.execute(
+                    delete(EvidenceRecord).where(
+                        EvidenceRecord.symbol == symbol,
+                        EvidenceRecord.provider == provider,
+                        EvidenceRecord.kind.in_(("filing", "news")),
+                    )
+                )
+                seen: set[str] = set()
+                for event in result.get("events") or []:
+                    external_id = str(event.get("external_id") or event.get("source_url") or "")
+                    if external_id and external_id in seen:
+                        continue
+                    if external_id:
+                        seen.add(external_id)
+                    kind = str(event.get("kind") or "filing")
+                    if kind not in {"filing", "news"}:
+                        kind = "filing"
+                    observed_at = _parse_datetime(event.get("observed_at") or checked_at)
+                    session.add(
+                        EvidenceRecord(
+                            symbol=symbol,
+                            kind=kind,
+                            provider=provider,
+                            observed_at=observed_at,
+                            payload_json=json.dumps(event, ensure_ascii=False),
+                        )
+                    )
+            session.commit()
+
+    def official_evidence_state(
+        self,
+        symbols: list[str],
+        *,
+        max_check_age_hours: int = 24,
+        max_documents_per_symbol: int = 5,
+    ) -> dict[str, Any]:
+        normalized = sorted({str(symbol).upper() for symbol in symbols if str(symbol).strip()})
+        if not normalized:
+            return {"checks": {}, "documents": {}}
+        now = datetime.now(timezone.utc)
+        fresh_after = now - timedelta(hours=max_check_age_hours)
+        with self.session() as session:
+            records = list(
+                session.scalars(
+                    select(EvidenceRecord)
+                    .where(
+                        EvidenceRecord.symbol.in_(normalized),
+                        EvidenceRecord.kind.in_(("source_check", "filing", "news")),
+                    )
+                    .order_by(EvidenceRecord.observed_at.desc(), EvidenceRecord.id.desc())
+                )
+            )
+        checks: dict[str, dict[str, Any]] = {}
+        documents: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in normalized}
+        for record in records:
+            observed_at = record.observed_at
+            if observed_at.tzinfo is None:
+                observed_at = observed_at.replace(tzinfo=timezone.utc)
+            payload = json.loads(record.payload_json)
+            if record.kind == "source_check":
+                if record.symbol not in checks:
+                    checks[record.symbol] = payload | {
+                        "provider": record.provider,
+                        "checked_at": observed_at.isoformat(),
+                        "fresh": observed_at >= fresh_after,
+                    }
+                continue
+            symbol_documents = documents.setdefault(record.symbol, [])
+            if len(symbol_documents) >= max_documents_per_symbol:
+                continue
+            symbol_documents.append(
+                payload | {
+                    "kind": record.kind,
+                    "provider": record.provider,
+                    "observed_at": observed_at.isoformat(),
+                }
+            )
+        return {"checks": checks, "documents": documents}
 
     def record_fx_rates(self, rates: dict[str, float], *, provider: str, observed_at: datetime) -> None:
         with self.session() as session:

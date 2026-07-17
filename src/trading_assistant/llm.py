@@ -128,7 +128,12 @@ def analyze_refresh_with_report(
             "research_confidence": item.get("research_confidence", "unrated"),
             "investment_certainty": item.get("investment_certainty", "unrated"),
             "evidence": [
-                {"kind": evidence["kind"], "title": evidence["title"], "detail": _humanize_internal_codes(evidence["detail"])}
+                {
+                    "kind": evidence["kind"],
+                    "title": evidence["title"],
+                    "detail": _humanize_internal_codes(evidence["detail"]),
+                    "source_url": evidence.get("source_url"),
+                }
                 for evidence in item.get("evidence", [])
             ],
         }
@@ -141,6 +146,8 @@ def analyze_refresh_with_report(
         "不使用账户总资产，不虚构新闻、公告、估值、价格或数据源。"
         "portfolio.data_coverage 是后端生成的权威覆盖说明：available 表示源数据存在，derived 表示本地已计算，"
         "partial 或 missing 才能描述为缺失；不得把仅保留在本地、未发送原始值的数据说成用户没有同步。"
+        "portfolio.investment_policy 是适用于全部持仓的全局政策；逐标的 user_rule 仅是可选覆盖，缺少覆盖不得描述为投资逻辑缺失。"
+        "official_evidence 只包含官方披露来源；不得把没有近期文件等同于来源未检查。"
         "invested_weight_percent 是已投资持仓内部权重，不等于包含现金的账户总仓位。"
         "如果存在决策，只为每条输入生成简短 title 和 summary。"
         "trigger、invalid_if、current_limit、policy_response、event_classification 和证据等级均由确定性规则锁定，不得改写。"
@@ -358,12 +365,6 @@ def _authoritative_limitations(portfolio_context: dict[str, Any]) -> list[str]:
             f"可卖数量仅覆盖 {int(available_quantity.get('available') or 0)}/{int(available_quantity.get('total') or 0)} 个持仓；未覆盖标的不生成具体卖出数量。"
         )
 
-    user_profile = coverage.get("user_profile", {})
-    if user_profile.get("status") in {"missing", "partial"}:
-        limitations.append(
-            f"逐标的投资逻辑仅覆盖 {int(user_profile.get('available') or 0)}/{int(user_profile.get('total') or 0)} 个持仓；其余标的只能执行通用风险检查。"
-        )
-
     daily_change = coverage.get("daily_change", {})
     if daily_change.get("status") in {"missing", "partial"}:
         limitations.append(
@@ -372,7 +373,9 @@ def _authoritative_limitations(portfolio_context: dict[str, Any]) -> list[str]:
 
     official_evidence = coverage.get("official_evidence", {})
     if official_evidence.get("status") in {"missing", "partial"}:
-        limitations.append("官方公告、财报和事件证据尚未接入，本次不能据此判断基本面变化或催化剂。")
+        limitations.append(
+            f"官方公告与财报来源仅检查 {int(official_evidence.get('available') or 0)}/{int(official_evidence.get('total') or 0)} 个持仓；未覆盖标的不能据此判断基本面变化或催化剂。"
+        )
 
     return limitations[:5]
 

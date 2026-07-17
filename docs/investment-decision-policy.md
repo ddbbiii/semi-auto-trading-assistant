@@ -4,9 +4,14 @@ OpenStock uses one deterministic policy for portfolio review. The canonical mach
 `src/trading_assistant/investment_policy.py`; the settings page exposes the same payload through
 `GET /api/v1/settings/investment-policy`.
 
-## Research record
+## Global policy and optional overrides
 
-Each symbol can store a maintainable decision profile:
+The canonical global policy applies to every active holding. A symbol does not become unanalyzable merely
+because it has no custom profile. Per-symbol profiles are optional overrides for facts or constraints that are
+truly specific to one instrument, such as a target weight, tactical price line, derivative expiry or thesis
+invalidation condition.
+
+An optional symbol profile can store:
 
 - investment thesis summary;
 - information grade (`A`, `B`, `C`) and separate research-confidence / investment-certainty fields;
@@ -33,8 +38,8 @@ sources. Grade C is an unverified lead and can only trigger further research.
   confirms a replacement snapshot. Elapsed time alone never creates an account-sync decision.
 - Missing evidence, an explicitly reported but unreconciled holding change, or unreliable quotes may produce
   `verify`. The engine does not force a buy or sell conclusion when the inputs are incomplete.
-- Clearing a position deactivates its profile. Buying the same symbol later does not silently reactivate the old
-  thesis or stops.
+- Clearing a position deactivates an optional profile. Buying the same symbol later does not silently reactivate
+  old overrides, while the global policy continues to apply.
 
 ## Four response levels
 
